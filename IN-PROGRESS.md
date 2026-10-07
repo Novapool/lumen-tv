@@ -3,7 +3,7 @@
 Last updated: 2026-10-06
 
 ## Where we are
-Project just started. The brief is saved in `BRIEF.md` and the milestones in `MILESTONES.md`. No code yet. Waiting for Laith to approve the plan and answer the open questions before M1 begins. Kodi is still the live front end on pitv and stays that way until M5.
+M1 done: Lumen runs fullscreen under labwc at 1080p60 from `lumen-test.service` (Kodi still boots by default). Smooth enough per Laith, with a known focus-change artifact under separate investigation. Now on M2 (input layer).
 
 ## Active Plan
 Build M1 → M5 in order (see MILESTONES.md), stopping after each one for a TV test.
@@ -34,22 +34,27 @@ Decisions so far:
 - Build Rust natively on the Pi (simplest; no cross-compile toolchain for WebKitGTK).
 - Window control through labwc's wlr-foreign-toplevel-management protocol (activate/close), behind `platform::Windows`.
 
-## Open questions (need Laith)
-1. Kodi currently provides Games (RetroPlayer), YouTube and Screen Mirror. "Replaces Kodi entirely" would drop them. Proposal: keep Kodi as a Lumen app tile (close-on-exit, exclusive) until replacements exist.
-2. New apt packages on the Pi for M1: labwc, Rust toolchain (rustup), Node, WebKitGTK 4.1 + GTK dev libs. OK to install?
-3. Store manifest "Git repo": create a GitHub repo now (e.g. lumen-tv, public, so a raw URL works), or use a local file until M4?
-4. How much RAM does this Pi 5 have? (Affects native Rust build time and the keep-alive budget.)
-5. M1 perf fallback if WebKitGTK can't hold 60 fps: (a) run at 1080p instead of 4K, (b) WebKit flags / reduced effects, (c) switch the webview to WPE/Cog, (d) a native UI (Slint). Decide only if the M1 gate fails.
+## Settled (2026-10-06)
+- Kodi stays as a Lumen tile (close-on-exit, exclusive) for Games/YouTube/Mirror until replacements exist.
+- Build deps approved. Rust 1.99 installed via rustup (`~/.cargo/bin`). apt packages need Laith's sudo (see Next Steps).
+- Store manifest lives in this repo: github.com/Novapool/lumen-tv, `store/manifest.json` (raw URL once pushed).
+- Pi 5 has 8 GB RAM. laith is already in the `input` group (evdev readable). TV mode is 3840x2160.
+- Perf fallback order if M1 fails: 1080p output → fewer effects → WPE/Cog → Slint. Laith chose 1080p + cheaper effects (2026-10-06); `wlr-randr` installed.
 
 ## Current Work
-- (none — waiting for go-ahead)
+- **M2 — Input layer** (starting 2026-10-06). See MILESTONES.md M2.
+
+## Known issues
+- Focus change on the Pi still shows a "drawn wrong, then snaps into place" artifact (Laith, 2026-10-06). Separate investigation handed off; candidates: WebKit re-rasterizing scaled layers at the end of a transform transition, subpixel snapping, layer promotion. ~1 dropped frame per focus change is also open (M5 polish).
+- M1 perf details: MILESTONES.md M1. Perf lines log under `labwc[...]`, so grep the whole journal, not `-u lumen-test`.
 
 ## Blockers
-- Plan approval + open questions above.
+- (none)
 
 ## Next Steps
-1. Laith approves plan and answers open questions.
-2. M1: install build deps on the Pi, scaffold Tauri + Svelte, test unit, frame-time overlay, measure on the TV.
+1. M2: check what the CEC remote and controller actually send (`cec-ctl`, `evtest`), then build the evdev reader + mappings.
 
 ## Recently Completed
+- M1 skeleton + perf (2026-10-06): passes revised gate at 1080p (55.9 fps, looks smooth); 4K not viable in WebKit on Pi 5. Details in MILESTONES.md.
+- Build deps installed on pitv (2026-10-06): needed `apt update` first (stale index 404'd on webkit2gtk security update).
 - Project folder, brief, milestones and tracking docs created (2026-10-06).

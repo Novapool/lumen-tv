@@ -2,9 +2,10 @@
 
 Spec: `BRIEF.md`. Each milestone stops for Laith to test on the TV before the next starts.
 
-## M1 — Skeleton + perf check
-Tauri 2 + Svelte/Vite app, fullscreen under labwc on the Pi, static tile row with focus animation (scale, shadow, tilt, sheen) driven by keyboard. Built natively on the Pi. Runs from a test unit that `Conflicts=kodi.service`, so Kodi stays the default until M5.
-**Gate:** on the TV at the Pi's native output mode, holding Right across 10+ tiles for 30 s keeps ≥ 55 fps average and < 5% frames over 25 ms, measured by an in-app `requestAnimationFrame` frame-time overlay. Fail → stop and propose options (see IN-PROGRESS Open questions).
+## M1 — Skeleton + perf check ✅ (2026-10-06)
+Tauri 2 + Svelte 5/Vite, fullscreen under labwc via `lumen-test.service`, static 12-tile row, frame-time overlay + 30 s bench.
+**Gate (revised 2026-10-06 by Laith):** ≥ 55 fps average during the 30 s hold-Right bench at 1920x1080 output, and Laith judges it smooth on the TV. Original gate (≥ 55 fps and < 5% frames > 25 ms at native 4K) failed.
+**Result:** 4K = 9.4 fps (GPU fill rate; CPU rendering and DMA-BUF-off are worse). 1080p60 output (wlr-randr in `session/start-lumen.sh`) = 55.9 fps, 16% slow frames, ~1 dropped frame per focus change even with all effects off (fixed WebKit per-change cost). Removing the tilt spring-back and title slide fixed most visible glitching; pre-painting stacked backdrops made it worse (12 full-width layers). Open: residual "redraw then snap" artifact on focus change (see IN-PROGRESS Known issues).
 
 ## M2 — Input layer
 evdev reader in Rust (non-grabbing), hotplug via inotify on `/dev/input`, per-device TOML mappings (`config/input/*.toml`), normalized events to the UI, hold-to-repeat with acceleration, stick deadzone, long-press Back → Home. Spatial navigation in the UI. CEC remote buttons verified with `cec-ctl` + `evtest`; `cec-remote.toml` generated from what the TV actually sends.

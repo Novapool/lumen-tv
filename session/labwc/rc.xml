@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!-- labwc config for the Lumen session: no decorations, no desktop key bindings. -->
+<labwc_config>
+  <core>
+    <decoration>client</decoration>
+  </core>
+  <!-- A single binding replaces labwc's defaults (Alt-Tab, Super-Return terminal, ...). -->
+  <keyboard>
+    <keybind key="W-F12">
+      <action name="None"/>
+    </keybind>
+  </keyboard>
+  <windowRules>
+    <windowRule identifier="*" serverDecoration="no"/>
+  </windowRules>
+</labwc_config>

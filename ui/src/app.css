@@ -1,0 +1,32 @@
+/* Everything is sized in rem, and 1rem = 1/120 of the screen width
+   (16px at 1080p, 32px at 4K). The layout looks the same at any resolution. */
+:root {
+  --bg: #05060a;
+  --text: #f4f5f8;
+  --muted: #9aa0ad;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --safe-x: 6rem; /* ~5% overscan margin */
+  --safe-y: 3.4rem;
+  color-scheme: dark;
+}
+
+html {
+  font-size: calc(100vw / 120);
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter Variable', system-ui, sans-serif;
+  cursor: none;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  height: 100%;
+}
