@@ -1,0 +1,22 @@
+[package]
+name = "lumen-slint"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Spike: the M1 home screen in Slint, to compare frame times with the WebKit build"
+
+[dependencies]
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-femtovg"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[build-dependencies]
+slint-build = "1.18"
+
+[features]
+# cargo build --release --features skia   (SLINT_BACKEND=winit-skia)
+skia = ["slint/renderer-skia"]
+# cargo build --release --features kms    (SLINT_BACKEND=linuxkms-femtovg, needs libinput/udev/gbm/drm -dev)
+kms = ["slint/backend-linuxkms-noseat", "slint/unstable-libinput-09"]
+
+[profile.release]
+lto = "thin"

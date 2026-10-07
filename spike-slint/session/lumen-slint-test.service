@@ -1,0 +1,21 @@
+# Slint spike test session, a copy of lumen-tv's lumen-test.service that runs
+# ~/lumen-slint instead, so the spike never touches ~/lumen-tv (M2's deploy).
+# When the spike exits, Kodi starts again.
+[Unit]
+Description=Lumen Slint spike test session
+After=systemd-user-sessions.service network-online.target sound.target
+Conflicts=getty@tty1.service kodi.service steamlink.service uxplay.service lumen-test.service
+
+[Service]
+User=laith
+Group=laith
+SupplementaryGroups=input video render audio
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+# Test knobs, editable without sudo: LUMEN_BENCH, LUMEN_MODE, SLINT_BACKEND, LUMEN_KMS=1
+EnvironmentFile=-/home/laith/.config/lumen-slint/env
+ExecStart=/home/laith/lumen-slint/session/run.sh
+ExecStopPost=+/usr/bin/systemctl start --no-block kodi.service

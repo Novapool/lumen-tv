@@ -1,0 +1,261 @@
+// The M1 home screen (ui/src/App.svelte + Tile.svelte) rebuilt in Slint for
+// the perf spike. Everything is sized in rem = 1/120 of the window width
+// (16 px at 1080p, 32 px at 4K), like ui/src/app.css.
+
+struct App {
+    name: string,
+    glyph: string,
+    bg: brush,
+}
+
+global Theme {
+    out property <color> bg: #05060a;
+    out property <color> text: #f4f5f8;
+    out property <color> muted: #9aa0ad;
+}
+
+component Tile inherits Rectangle {
+    in property <App> app;
+    in property <bool> focused;
+    in property <bool> pressed;
+    in property <length> rem;
+
+    // Focus grows the face to 1.12 and fades in the shadow and name (240 / 200 ms).
+    // Press shrinks it to 1.05 in 90 ms; release springs back in 240 ms.
+    property <float> s: !root.focused ? 1 : root.pressed ? 1.05 : 1.12;
+    property <float> lift: root.focused ? 1 : 0;
+    property <float> name-opacity: root.focused ? 1 : 0;
+    animate s {
+        duration: root.pressed ? 90ms : 240ms;
+        easing: cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    animate lift {
+        duration: 240ms;
+        easing: cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    animate name-opacity { duration: 200ms; }
+
+    width: 19 * root.rem;
+    height: 11.4 * root.rem;
+
+    face := Rectangle {
+        width: 19 * root.rem * root.s;
+        height: 11.4 * root.rem * root.s;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        border-radius: 1.1 * root.rem * root.s;
+        background: root.app.bg;
+        // CSS: box-shadow 0 2.2rem 3.2rem rgb(0 0 0 / 0.65) on a layer scaled 1.12 and moved down 0.5rem
+        drop-shadow-color: rgba(0, 0, 0, 0.65 * root.lift);
+        drop-shadow-offset-y: (2.2 * root.s + 0.5 * root.lift) * root.rem;
+        drop-shadow-blur: 3.2 * root.rem * root.s;
+
+        Text {
+            width: 100%;
+            height: 100%;
+            text: root.app.glyph;
+            font-size: 5 * root.rem * root.s;
+            font-weight: 700;
+            color: #ffffffeb;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        // top gloss
+        Rectangle {
+            border-radius: parent.border-radius;
+            background: @linear-gradient(180deg, #ffffff33 0%, #ffffff0a 45%, #ffffff00 55%);
+        }
+    }
+
+    Text {
+        y: root.height + 1.9 * root.rem;
+        width: root.width;
+        text: root.app.name;
+        font-size: 1.5 * root.rem;
+        font-weight: 600;
+        color: Theme.text;
+        horizontal-alignment: center;
+        opacity: root.name-opacity;
+    }
+}
+
+export component Home inherits Window {
+    title: "Lumen (Slint spike)";
+    background: Theme.bg;
+    default-font-size: 16px;
+
+    in property <string> clock: "";
+    in property <string> perf-text: "";
+    in property <bool> input-locked: false; // during the benchmark
+    in-out property <int> focused: 0;
+    in-out property <bool> pressed: false;
+    callback press();
+    callback quit();
+
+    property <length> rem: self.width / 120;
+    property <length> safe-x: 6 * root.rem;
+    property <length> safe-y: 3.4 * root.rem;
+    property <int> visible-tiles: 5;
+
+    property <[App]> apps: [
+        { name: "Jellyfin", glyph: "J", bg: @linear-gradient(135deg, #6b2fb3 0%, #00a4dc 100%) },
+        { name: "Plex", glyph: "P", bg: @linear-gradient(135deg, #1f1f1f 0%, #3a2a05 60%, #e5a00d 100%) },
+        { name: "Steam Link", glyph: "S", bg: @linear-gradient(135deg, #0b1a33 0%, #1b6fd1 100%) },
+        { name: "Kodi", glyph: "K", bg: @linear-gradient(135deg, #0d3b5c 0%, #17b2e7 100%) },
+        { name: "YouTube", glyph: "Y", bg: @linear-gradient(135deg, #5a0000 0%, #ff2a2a 100%) },
+        { name: "Games", glyph: "G", bg: @linear-gradient(135deg, #0f3d1e 0%, #3ccf6e 100%) },
+        { name: "Screen Mirror", glyph: "M", bg: @linear-gradient(135deg, #3b3f48 0%, #b9c0cc 100%) },
+        { name: "Music", glyph: "♪", bg: @linear-gradient(135deg, #5c0a3a 0%, #ff4f8b 100%) },
+        { name: "Photos", glyph: "F", bg: @linear-gradient(135deg, #5a3a00 0%, #ffc23d 100%) },
+        { name: "Weather", glyph: "W", bg: @linear-gradient(135deg, #0a2e5c 0%, #5fb4ff 100%) },
+        { name: "Store", glyph: "+", bg: @linear-gradient(135deg, #003b3b 0%, #19c3b0 100%) },
+        { name: "Settings", glyph: "⚙", bg: @linear-gradient(135deg, #24262c 0%, #6b707c 100%) },
+    ];
+
+    // Two backdrop layers: the hidden one gets the new colour, then they swap opacity.
+    property <brush> hero-a: root.apps[0].bg;
+    property <brush> hero-b: root.apps[0].bg;
+    property <int> hero-front: 0;
+
+    // The row slides so the focused tile stays 2nd from the left.
+    property <length> row-offset: max(0, min(root.focused - 1, root.apps.length - root.visible-tiles)) * 22 * root.rem;
+    animate row-offset {
+        duration: 320ms;
+        easing: cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    public function move(dir: int) -> bool {
+        if (root.focused + dir < 0 || root.focused + dir >= root.apps.length) {
+            return false;
+        }
+        root.focused += dir;
+        if (root.hero-front == 0) {
+            root.hero-b = root.apps[root.focused].bg;
+            root.hero-front = 1;
+        } else {
+            root.hero-a = root.apps[root.focused].bg;
+            root.hero-front = 0;
+        }
+        return true;
+    }
+
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.modifiers.control && (event.text == "q" || event.text == "Q")) {
+                root.quit();
+                return accept;
+            }
+            if (root.input-locked) {
+                return reject;
+            }
+            if (event.text == Key.RightArrow) {
+                root.move(1);
+                return accept;
+            }
+            if (event.text == Key.LeftArrow) {
+                root.move(-1);
+                return accept;
+            }
+            if (event.text == Key.Return || event.text == " ") {
+                root.press();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    // hero ("top shelf") backdrop: top 65% of the screen
+    hero := Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height * 0.65;
+
+        Rectangle {
+            background: root.hero-a;
+            opacity: root.hero-front == 0 ? 0.55 : 0;
+            animate opacity { duration: 600ms; easing: ease; }
+        }
+
+        Rectangle {
+            background: root.hero-b;
+            opacity: root.hero-front == 1 ? 0.55 : 0;
+            animate opacity { duration: 600ms; easing: ease; }
+        }
+
+        // CSS: radial-gradient(ellipse at 70% 0%, transparent 30%, bg 85%). Slint's
+        // radial gradients are circles around the centre, so the circle is placed at (70%, 0).
+        property <float> r: sqrt(pow(0.7 * self.width / 1px, 2) + pow(self.height / 1px, 2));
+        Rectangle {
+            width: 2 * parent.r * 1px;
+            height: self.width;
+            x: 0.7 * parent.width - self.width / 2;
+            y: -self.height / 2;
+            background: @radial-gradient(circle, #05060a00 30%, #05060a 85%);
+        }
+
+        Rectangle {
+            background: @linear-gradient(180deg, #05060a00 40%, #05060a 100%);
+        }
+    }
+
+    Text {
+        x: root.safe-x;
+        y: root.safe-y;
+        text: "Lumen";
+        font-size: 2 * root.rem;
+        font-weight: 750;
+        color: Theme.text;
+    }
+
+    Text {
+        x: root.width - root.safe-x - self.width;
+        y: root.safe-y;
+        text: root.clock;
+        font-size: 1.9 * root.rem;
+        font-weight: 500;
+        color: Theme.muted;
+    }
+
+    if root.perf-text != "": Text {
+        x: root.width - root.safe-x - self.width;
+        y: root.safe-y + 3.5 * root.rem;
+        text: root.perf-text;
+        font-size: 1.15 * root.rem;
+        color: Theme.text;
+        horizontal-alignment: right;
+    }
+
+    Text {
+        x: root.safe-x;
+        y: 14 * root.rem;
+        text: root.apps[root.focused].name;
+        font-size: 5.2 * root.rem;
+        font-weight: 750;
+        letter-spacing: -0.02 * 5.2 * root.rem;
+        color: Theme.text;
+    }
+
+    // .row-viewport is at top 33rem with 2rem padding
+    Rectangle {
+        x: root.safe-x - root.row-offset;
+        y: 35 * root.rem;
+        width: root.apps.length * 22 * root.rem;
+        height: 11.4 * root.rem;
+
+        for app[i] in root.apps: Tile {
+            x: i * 22 * root.rem;
+            y: 0;
+            app: app;
+            rem: root.rem;
+            focused: i == root.focused;
+            pressed: root.pressed && i == root.focused;
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: none;
+    }
+}

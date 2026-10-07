@@ -1,0 +1,2 @@
+# Lets laith (and Claude over ssh) start/stop the Slint spike test session only.
+laith ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block lumen-slint-test.service, /usr/bin/systemctl stop lumen-slint-test.service
