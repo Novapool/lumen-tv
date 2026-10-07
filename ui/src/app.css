@@ -5,6 +5,15 @@
   --text: #f4f5f8;
   --muted: #9aa0ad;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* Every focus animation is a "hold" animation: the change plays in the
+     first few hundred ms of a 1000 s animation and the end value then holds.
+     WebKitGTK runs transform/opacity animations on its compositor; when one
+     ends there, the compositor draws the pre-animation value until the main
+     thread commits the final one, which takes ~2 frames on the Pi 5: a
+     faded-out name flashed back, a shrunk tile popped back to 1.12x. A hold
+     animation is still running when the next focus change replaces it in
+     the same commit, so the compositor never runs out of animation. */
+  --hold: 1000s;
   --safe-x: 6rem; /* ~5% overscan margin */
   --safe-y: 3.4rem;
   color-scheme: dark;

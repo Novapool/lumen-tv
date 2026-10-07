@@ -16,6 +16,27 @@
   let rowOffset = $derived(Math.max(0, Math.min(focused - 1, apps.length - VISIBLE)) * STEP_REM);
 
 
+  // The row scrolls with a Web Animation in the same "hold" style as the CSS
+  // ones (see app.css): it moves in 320 ms, then holds the end value, and the
+  // next move replaces it in the same frame.
+  const HOLD_MS = 1e6;
+  let rowEl;
+  let rowAnim;
+  $effect(() => {
+    const to = `translateX(-${rowOffset}rem)`;
+    const from = getComputedStyle(rowEl).transform; // includes the running animation
+    const next = rowEl.animate(
+      [
+        { transform: from, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' },
+        { transform: to, offset: 320 / HOLD_MS },
+        { transform: to },
+      ],
+      { duration: HOLD_MS, fill: 'forwards' },
+    );
+    rowAnim?.cancel();
+    rowAnim = next;
+  });
+
   // Two backdrop layers: the hidden one gets the new colour, then they swap
   // opacity. (One pre-painted layer per app was slower on the Pi: 12 full-width layers.)
   let heroBg = $state([apps[0].bg, apps[0].bg]);
@@ -138,9 +159,9 @@
   </section>
 
   <div class="row-viewport">
-    <div class="row" style:transform="translateX(-{rowOffset}rem)">
+    <div class="row" bind:this={rowEl} style:transform="translateX(-{rowOffset}rem)">
       {#each apps as app, i (app.id)}
-        <Tile {app} focused={i === focused} pressed={pressed && i === focused} />
+        <Tile {app} focused={i === focused} near={Math.abs(i - focused) <= 1} pressed={pressed && i === focused} />
       {/each}
     </div>
   </div>
@@ -182,12 +203,24 @@
     position: absolute;
     inset: 0;
     opacity: 0;
-    transition: opacity 600ms ease;
+    animation: hero-out var(--hold) ease both;
     will-change: opacity;
   }
 
   .hero-layer.front {
     opacity: 0.55;
+    animation-name: hero-in;
+  }
+
+  /* 600 ms of the 1000 s hold = 0.06% */
+  @keyframes hero-in {
+    0% { opacity: 0; }
+    0.06%, 100% { opacity: 0.55; }
+  }
+
+  @keyframes hero-out {
+    0% { opacity: 0.55; }
+    0.06%, 100% { opacity: 0; }
   }
 
   .hero-fade {
@@ -245,7 +278,6 @@
   .row {
     display: flex;
     gap: 3rem;
-    transition: transform 320ms var(--ease-out);
     will-change: transform;
   }
 

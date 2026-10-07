@@ -45,7 +45,7 @@ Decisions so far:
 - **M2 — Input layer** (starting 2026-10-06). See MILESTONES.md M2.
 
 ## Known issues
-- Focus change on the Pi still shows a "drawn wrong, then snaps into place" artifact (Laith, 2026-10-06). Separate investigation handed off; candidates: WebKit re-rasterizing scaled layers at the end of a transform transition, subpixel snapping, layer promotion. ~1 dropped frame per focus change is also open (M5 polish).
+- Focus-change "drawn wrong, then snaps" artifact: fixed on `fix/focus-animation` (2026-10-06, Laith confirmed on the TV, 56.6 fps). Cause: WebKitGTK runs transform/opacity animations on its compositor, and when one ends the compositor draws the pre-animation value for ~2 frames until the main thread commits the final one (names flashed back, shrunk tiles popped to 1.12x). Fix: "hold" animations (`--hold` in `ui/src/app.css`): never use CSS transitions for focus effects. Main-thread animation (`@property` transitions) also fixes it but drops to 37 fps (each main-thread frame costs ~2 vsyncs on the Pi). Sheen removed. ~1 dropped frame per focus change is still open (M5 polish). Don't run wf-recorder on the Pi: its frames come out garbled and it froze the TV output.
 - M1 perf details: MILESTONES.md M1. Perf lines log under `labwc[...]`, so grep the whole journal, not `-u lumen-test`.
 
 ## Blockers
