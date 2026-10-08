@@ -35,8 +35,9 @@ export component AppWindow inherits Window {
     property <length> safe-y: 3.4 * root.rem;
     property <int> visible-tiles: 5;
 
-    // Placeholder apps until the registry (M3) supplies them.
-    property <[App]> apps: [
+    // Placeholder apps until the registry (M3) supplies them. main.rs bakes
+    // each `hero` from `bg` at startup.
+    in-out property <[App]> apps: [
         { name: "Jellyfin", glyph: "J", bg: @linear-gradient(135deg, #6b2fb3 0%, #00a4dc 100%) },
         { name: "Plex", glyph: "P", bg: @linear-gradient(135deg, #1f1f1f 0%, #3a2a05 60%, #e5a00d 100%) },
         { name: "Steam Link", glyph: "S", bg: @linear-gradient(135deg, #0b1a33 0%, #1b6fd1 100%) },
@@ -51,10 +52,22 @@ export component AppWindow inherits Window {
         { name: "Settings", glyph: "⚙", bg: @linear-gradient(135deg, #24262c 0%, #6b707c 100%) },
     ];
 
-    // Two backdrop layers: the hidden one gets the new colour, then they swap opacity.
-    property <brush> hero-a: root.apps[0].bg;
-    property <brush> hero-b: root.apps[0].bg;
+    // Two backdrop layers: the hidden one gets the new image, then they swap opacity.
+    property <image> hero-a: root.apps[0].hero;
+    property <image> hero-b: root.apps[0].hero;
     property <int> hero-front: 0;
+    // Crossfade weights. The blend is done by blend() in main.rs on the small
+    // baked images, so the GPU still draws one backdrop layer: two full-width
+    // layers fading at 4K cost ~30 fps of the motion bench.
+    property <float> weight-a: root.hero-front == 0 ? 1 : 0;
+    property <float> weight-b: root.hero-front == 1 ? 1 : 0;
+    animate weight-a, weight-b { duration: 600ms; easing: ease; }
+    pure callback blend(image, image, float) -> image; // (a, b, share of b)
+
+    // Tile faces and the shared shadow are baked for the current size (main.rs).
+    in property <image> tile-shadow;
+    callback rebake-tiles(float); // physical pixels per rem
+    changed rem => { root.rebake-tiles(self.rem / 1phx); }
 
     // The row slides so the focused tile stays 2nd from the left.
     property <length> row-offset: max(0, min(root.focused - 1, root.apps.length - root.visible-tiles)) * 22 * root.rem;
@@ -70,10 +83,10 @@ export component AppWindow inherits Window {
         }
         root.focused += dir;
         if (root.hero-front == 0) {
-            root.hero-b = root.apps[root.focused].bg;
+            root.hero-b = root.apps[root.focused].hero;
             root.hero-front = 1;
         } else {
-            root.hero-a = root.apps[root.focused].bg;
+            root.hero-a = root.apps[root.focused].hero;
             root.hero-front = 0;
         }
         return true;
@@ -137,38 +150,20 @@ export component AppWindow inherits Window {
         }
     }
 
-    // hero ("top shelf") backdrop: top 65% of the screen
+    // hero ("top shelf") backdrop: top 65% of the screen. Each app's gradient
+    // and fades are baked into one opaque image (src/bake.rs), so at rest this
+    // is a single layer: the GPU is fill-rate bound at 4K.
     Rectangle {
         x: 0;
         y: 0;
         width: root.width;
         height: root.height * 0.65;
 
-        Rectangle {
-            background: root.hero-a;
-            opacity: root.hero-front == 0 ? 0.55 : 0;
-            animate opacity { duration: 600ms; easing: ease; }
-        }
-
-        Rectangle {
-            background: root.hero-b;
-            opacity: root.hero-front == 1 ? 0.55 : 0;
-            animate opacity { duration: 600ms; easing: ease; }
-        }
-
-        // Fade out towards the bottom right. Slint's radial gradients are
-        // circles around the centre, so the circle is centred at (70%, 0).
-        property <float> r: sqrt(pow(0.7 * self.width / 1px, 2) + pow(self.height / 1px, 2));
-        Rectangle {
-            width: 2 * parent.r * 1px;
-            height: self.width;
-            x: 0.7 * parent.width - self.width / 2;
-            y: -self.height / 2;
-            background: @radial-gradient(circle, #05060a00 30%, #05060a 85%);
-        }
-
-        Rectangle {
-            background: @linear-gradient(180deg, #05060a00 40%, #05060a 100%);
+        Image {
+            width: 100%;
+            height: 100%;
+            source: root.blend(root.hero-a, root.hero-b, root.weight-b / max(0.001, root.weight-a + root.weight-b));
+            image-fit: fill;
         }
     }
 
@@ -235,6 +230,7 @@ export component AppWindow inherits Window {
             rem: root.rem;
             focused: i == root.focused;
             pressed: root.pressed && i == root.focused;
+            shadow: root.tile-shadow;
         }
     }
 
