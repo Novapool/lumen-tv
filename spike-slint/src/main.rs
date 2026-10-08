@@ -90,6 +90,13 @@ fn main() -> Result<(), slint::PlatformError> {
     let ui = Home::new()?;
     ui.window().set_fullscreen(true);
     ui.set_clock(time_now().into());
+    ui.set_debug_shadow(std::env::var("LUMEN_SHADOW_DEBUG").is_ok_and(|v| v == "1"));
+    let shadow = std::env::var("LUMEN_SHADOW").unwrap_or_default();
+    ui.set_shadow_mode(match shadow.as_str() {
+        "off" => 0,
+        "grow" => 1,
+        _ => 2,
+    });
 
     let clock = Timer::default();
     let weak = ui.as_weak();
@@ -197,13 +204,14 @@ fn run_bench(weak: slint::Weak<Home>, rec: Rc<RefCell<Recorder>>) {
             let size = ui.window().size();
             let backend = std::env::var("SLINT_BACKEND").unwrap_or_else(|_| "default".into());
             println!(
-                r#"[perf] {{"idle":{},"motion":{},"viewport":"{}x{}","scale":{},"backend":"{}"}}"#,
+                r#"[perf] {{"idle":{},"motion":{},"viewport":"{}x{}","scale":{},"backend":"{}","shadow":"{}"}}"#,
                 stats_json(&idle),
                 stats_json(&motion),
                 size.width,
                 size.height,
                 ui.window().scale_factor(),
-                backend
+                backend,
+                ["off", "grow", "fixed"][ui.get_shadow_mode() as usize]
             );
             let summary = match &motion {
                 Some(m) => format!("{} fps · {}% slow · p95 {} ms · worst {} ms", m.fps, m.slow_pct, m.p95, m.worst),

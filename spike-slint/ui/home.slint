@@ -19,6 +19,11 @@ component Tile inherits Rectangle {
     in property <bool> focused;
     in property <bool> pressed;
     in property <length> rem;
+    // 0 = none, 1 = "grow": the face's own drop shadow, which scales with it
+    // (blur re-rendered every frame), 2 = "fixed": a separate shadow at the
+    // focused size that only fades, so the renderer can reuse it.
+    in property <int> shadow-mode: 2;
+    in property <color> shadow-color: rgba(0, 0, 0, 0.65);
 
     // Focus grows the face to 1.12 and fades in the shadow and name (240 / 200 ms).
     // Press shrinks it to 1.05 in 90 ms; release springs back in 240 ms.
@@ -38,6 +43,19 @@ component Tile inherits Rectangle {
     width: 19 * root.rem;
     height: 11.4 * root.rem;
 
+    // Slint draws no shadow for a rectangle without a fill, so this one is
+    // filled and kept at the resting size, where the face (never < 1.0x) hides it.
+    if root.shadow-mode == 2 && root.lift > 0: Rectangle {
+        width: 19 * root.rem;
+        height: 11.4 * root.rem;
+        border-radius: 1.1 * root.rem;
+        background: black;
+        drop-shadow-color: root.shadow-color;
+        drop-shadow-offset-y: (2.2 * 1.12 + 0.5) * root.rem;
+        drop-shadow-blur: (3.2 * 1.12 + 1.2) * root.rem; // +1.2rem makes up for the smaller box
+        opacity: root.lift;
+    }
+
     face := Rectangle {
         width: 19 * root.rem * root.s;
         height: 11.4 * root.rem * root.s;
@@ -46,7 +64,7 @@ component Tile inherits Rectangle {
         border-radius: 1.1 * root.rem * root.s;
         background: root.app.bg;
         // CSS: box-shadow 0 2.2rem 3.2rem rgb(0 0 0 / 0.65) on a layer scaled 1.12 and moved down 0.5rem
-        drop-shadow-color: rgba(0, 0, 0, 0.65 * root.lift);
+        drop-shadow-color: root.shadow-mode == 1 ? rgba(0, 0, 0, 0.65 * root.lift) : transparent;
         drop-shadow-offset-y: (2.2 * root.s + 0.5 * root.lift) * root.rem;
         drop-shadow-blur: 3.2 * root.rem * root.s;
 
@@ -88,6 +106,8 @@ export component Home inherits Window {
     in property <string> clock: "";
     in property <string> perf-text: "";
     in property <bool> input-locked: false; // during the benchmark
+    in property <int> shadow-mode: 2; // LUMEN_SHADOW=off|grow|fixed, see Tile
+    in property <bool> debug-shadow: false; // LUMEN_SHADOW_DEBUG=1: red, to check it's drawn
     in-out property <int> focused: 0;
     in-out property <bool> pressed: false;
     callback press();
@@ -250,6 +270,8 @@ export component Home inherits Window {
             y: 0;
             app: app;
             rem: root.rem;
+            shadow-mode: root.shadow-mode;
+            shadow-color: root.debug-shadow ? #ff0000 : rgba(0, 0, 0, 0.65);
             focused: i == root.focused;
             pressed: root.pressed && i == root.focused;
         }
