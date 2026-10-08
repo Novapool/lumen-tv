@@ -16,7 +16,7 @@ TTYPath=/dev/tty1
 StandardInput=tty
 StandardOutput=journal
 StandardError=journal
-# Optional overrides without sudo (LUMEN_BENCH=1, WEBKIT_* flags).
+# Optional overrides without sudo (LUMEN_BENCH=1, LUMEN_MODE, SLINT_*).
 EnvironmentFile=-/home/laith/.config/lumen-tv/env
 ExecStart=/usr/bin/labwc -C /home/laith/lumen-tv/session/labwc -S /home/laith/lumen-tv/session/start-lumen.sh
 # "+" runs this as root, so it can start Kodi again whenever Lumen exits

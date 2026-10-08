@@ -1,5 +1,2 @@
-node_modules/
-ui/dist/
-src-tauri/target/
-src-tauri/gen/
+target/
 .DS_Store

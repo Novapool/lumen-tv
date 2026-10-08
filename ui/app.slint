@@ -1,0 +1,207 @@
+// Lumen's window: the home screen (hero backdrop, title, tile row) and the
+// benchmark readout. Everything is sized in rem = 1/120 of the window width
+// (16 px at 1080p). Keyboard input lives here until M2 delivers evdev events.
+
+import { Theme } from "theme.slint";
+import { App, Tile } from "tile.slint";
+
+export component AppWindow inherits Window {
+    title: "Lumen";
+    background: Theme.bg;
+    default-font-size: 16px;
+
+    in property <string> clock: "";
+    in property <bool> input-locked: false; // during the benchmark
+    in property <string> perf-text: "";
+    in property <string> perf-detail: "";
+    in property <int> perf-verdict: 0; // 0 none, 1 pass, -1 fail
+    in-out property <int> focused: 0;
+    in-out property <bool> pressed: false;
+    callback press();
+    callback bench();
+    callback quit();
+
+    property <length> rem: self.width / 120;
+    property <length> safe-x: 6 * root.rem;
+    property <length> safe-y: 3.4 * root.rem;
+    property <int> visible-tiles: 5;
+
+    // Placeholder apps until the registry (M3) supplies them.
+    property <[App]> apps: [
+        { name: "Jellyfin", glyph: "J", bg: @linear-gradient(135deg, #6b2fb3 0%, #00a4dc 100%) },
+        { name: "Plex", glyph: "P", bg: @linear-gradient(135deg, #1f1f1f 0%, #3a2a05 60%, #e5a00d 100%) },
+        { name: "Steam Link", glyph: "S", bg: @linear-gradient(135deg, #0b1a33 0%, #1b6fd1 100%) },
+        { name: "Kodi", glyph: "K", bg: @linear-gradient(135deg, #0d3b5c 0%, #17b2e7 100%) },
+        { name: "YouTube", glyph: "Y", bg: @linear-gradient(135deg, #5a0000 0%, #ff2a2a 100%) },
+        { name: "Games", glyph: "G", bg: @linear-gradient(135deg, #0f3d1e 0%, #3ccf6e 100%) },
+        { name: "Screen Mirror", glyph: "M", bg: @linear-gradient(135deg, #3b3f48 0%, #b9c0cc 100%) },
+        { name: "Music", glyph: "♪", bg: @linear-gradient(135deg, #5c0a3a 0%, #ff4f8b 100%) },
+        { name: "Photos", glyph: "F", bg: @linear-gradient(135deg, #5a3a00 0%, #ffc23d 100%) },
+        { name: "Weather", glyph: "W", bg: @linear-gradient(135deg, #0a2e5c 0%, #5fb4ff 100%) },
+        { name: "Store", glyph: "+", bg: @linear-gradient(135deg, #003b3b 0%, #19c3b0 100%) },
+        { name: "Settings", glyph: "⚙", bg: @linear-gradient(135deg, #24262c 0%, #6b707c 100%) },
+    ];
+
+    // Two backdrop layers: the hidden one gets the new colour, then they swap opacity.
+    property <brush> hero-a: root.apps[0].bg;
+    property <brush> hero-b: root.apps[0].bg;
+    property <int> hero-front: 0;
+
+    // The row slides so the focused tile stays 2nd from the left.
+    property <length> row-offset: max(0, min(root.focused - 1, root.apps.length - root.visible-tiles)) * 22 * root.rem;
+    animate row-offset {
+        duration: 320ms;
+        easing: Theme.ease-out;
+    }
+
+    // Moves focus by dir tiles; false at either end of the row.
+    public function move(dir: int) -> bool {
+        if (root.focused + dir < 0 || root.focused + dir >= root.apps.length) {
+            return false;
+        }
+        root.focused += dir;
+        if (root.hero-front == 0) {
+            root.hero-b = root.apps[root.focused].bg;
+            root.hero-front = 1;
+        } else {
+            root.hero-a = root.apps[root.focused].bg;
+            root.hero-front = 0;
+        }
+        return true;
+    }
+
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.modifiers.control && (event.text == "q" || event.text == "Q")) {
+                root.quit();
+                return accept;
+            }
+            if (root.input-locked) {
+                return reject;
+            }
+            if (event.text == Key.RightArrow) {
+                root.move(1);
+                return accept;
+            }
+            if (event.text == Key.LeftArrow) {
+                root.move(-1);
+                return accept;
+            }
+            if (event.text == Key.Return || event.text == " ") {
+                root.press();
+                return accept;
+            }
+            if (event.text == "b" || event.text == "B") {
+                root.bench();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    // hero ("top shelf") backdrop: top 65% of the screen
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height * 0.65;
+
+        Rectangle {
+            background: root.hero-a;
+            opacity: root.hero-front == 0 ? 0.55 : 0;
+            animate opacity { duration: 600ms; easing: ease; }
+        }
+
+        Rectangle {
+            background: root.hero-b;
+            opacity: root.hero-front == 1 ? 0.55 : 0;
+            animate opacity { duration: 600ms; easing: ease; }
+        }
+
+        // Fade out towards the bottom right. Slint's radial gradients are
+        // circles around the centre, so the circle is centred at (70%, 0).
+        property <float> r: sqrt(pow(0.7 * self.width / 1px, 2) + pow(self.height / 1px, 2));
+        Rectangle {
+            width: 2 * parent.r * 1px;
+            height: self.width;
+            x: 0.7 * parent.width - self.width / 2;
+            y: -self.height / 2;
+            background: @radial-gradient(circle, #05060a00 30%, #05060a 85%);
+        }
+
+        Rectangle {
+            background: @linear-gradient(180deg, #05060a00 40%, #05060a 100%);
+        }
+    }
+
+    Text {
+        x: root.safe-x;
+        y: root.safe-y;
+        text: "Lumen";
+        font-size: 2 * root.rem;
+        font-weight: 750;
+        color: Theme.text;
+    }
+
+    Text {
+        x: root.width - root.safe-x - self.width;
+        y: root.safe-y;
+        text: root.clock;
+        font-size: 1.9 * root.rem;
+        font-weight: 500;
+        color: Theme.muted;
+    }
+
+    if root.perf-text != "": VerticalLayout {
+        x: root.width - root.safe-x - self.width;
+        y: root.safe-y + 3.5 * root.rem;
+        spacing: 0.3 * root.rem;
+
+        Text {
+            text: root.perf-text;
+            font-size: 1.15 * root.rem;
+            font-weight: 600;
+            color: root.perf-verdict == 1 ? Theme.pass : root.perf-verdict == -1 ? Theme.fail : Theme.text;
+            horizontal-alignment: right;
+        }
+
+        if root.perf-detail != "": Text {
+            text: root.perf-detail;
+            font-size: 1.15 * root.rem;
+            color: Theme.muted;
+            horizontal-alignment: right;
+        }
+    }
+
+    Text {
+        x: root.safe-x;
+        y: 14 * root.rem;
+        text: root.apps[root.focused].name;
+        font-size: 5.2 * root.rem;
+        font-weight: 750;
+        letter-spacing: -0.02 * 5.2 * root.rem;
+        color: Theme.text;
+    }
+
+    // tile row, 22rem pitch
+    Rectangle {
+        x: root.safe-x - root.row-offset;
+        y: 35 * root.rem;
+        width: root.apps.length * 22 * root.rem;
+        height: 11.4 * root.rem;
+
+        for app[i] in root.apps: Tile {
+            x: i * 22 * root.rem;
+            y: 0;
+            app: app;
+            rem: root.rem;
+            focused: i == root.focused;
+            pressed: root.pressed && i == root.focused;
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: none;
+    }
+}

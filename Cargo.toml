@@ -1,0 +1,19 @@
+[package]
+name = "lumen-tv"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+description = "Lumen: a couch-first launcher for the Raspberry Pi 5"
+
+[dependencies]
+# femtovg only: Skia was slower on the Pi 5 at every resolution (tag spike-slint-2026-10-08, REPORT.md).
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-femtovg"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[build-dependencies]
+slint-build = "1.18"
+
+[profile.release]
+lto = "thin"
+strip = true

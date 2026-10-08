@@ -1,0 +1,88 @@
+// One app tile. Sized in rem (1/120 of the window width) like the rest of the UI.
+//
+// Performance rule from the spike: never animate a drop shadow's size or blur
+// (the blur is re-rendered every frame). The shadow here is a separate box at
+// a fixed size that only fades.
+
+import { Theme } from "theme.slint";
+
+export struct App {
+    name: string,
+    glyph: string,
+    bg: brush,
+}
+
+export component Tile inherits Rectangle {
+    in property <App> app;
+    in property <bool> focused;
+    in property <bool> pressed;
+    in property <length> rem;
+
+    // Focus grows the face to 1.12 and fades in the shadow and name (240 / 200 ms).
+    // Press shrinks it to 1.05 in 90 ms; release springs back in 240 ms.
+    property <float> s: !root.focused ? 1 : root.pressed ? 1.05 : 1.12;
+    property <float> lift: root.focused ? 1 : 0;
+    property <float> name-opacity: root.focused ? 1 : 0;
+    animate s {
+        duration: root.pressed ? 90ms : 240ms;
+        easing: Theme.ease-out;
+    }
+    animate lift {
+        duration: 240ms;
+        easing: Theme.ease-out;
+    }
+    animate name-opacity { duration: 200ms; }
+
+    width: 19 * root.rem;
+    height: 11.4 * root.rem;
+
+    // Slint draws no shadow for a rectangle without a fill, so this one is
+    // filled and kept at the resting size, where the face (never < 1.0x) hides it.
+    if root.lift > 0: Rectangle {
+        width: 19 * root.rem;
+        height: 11.4 * root.rem;
+        border-radius: 1.1 * root.rem;
+        background: black;
+        drop-shadow-color: rgba(0, 0, 0, 0.65);
+        drop-shadow-offset-y: (2.2 * 1.12 + 0.5) * root.rem;
+        drop-shadow-blur: (3.2 * 1.12 + 1.2) * root.rem; // +1.2rem makes up for the smaller box
+        opacity: root.lift;
+    }
+
+    Rectangle {
+        width: 19 * root.rem * root.s;
+        height: 11.4 * root.rem * root.s;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        border-radius: 1.1 * root.rem * root.s;
+        background: root.app.bg;
+
+        Text {
+            width: 100%;
+            height: 100%;
+            text: root.app.glyph;
+            font-size: 5 * root.rem * root.s;
+            font-weight: 700;
+            color: #ffffffeb;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        // top gloss
+        Rectangle {
+            border-radius: parent.border-radius;
+            background: @linear-gradient(180deg, #ffffff33 0%, #ffffff0a 45%, #ffffff00 55%);
+        }
+    }
+
+    Text {
+        y: root.height + 1.9 * root.rem;
+        width: root.width;
+        text: root.app.name;
+        font-size: 1.5 * root.rem;
+        font-weight: 600;
+        color: Theme.text;
+        horizontal-alignment: center;
+        opacity: root.name-opacity;
+    }
+}
