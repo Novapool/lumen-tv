@@ -5,6 +5,7 @@ Spec: `BRIEF.md`. Each milestone stops for Laith to test on the TV before the ne
 ## Scope changes
 - **2026-10-08, UI stack (Laith):** Slint 1.18 (femtovg renderer, winit backend under labwc) replaces Tauri 2 + Svelte + WebKitGTK, which BRIEF §2 names. Reason: the Slint spike (tag `spike-slint-2026-10-08`, `spike-slint/REPORT.md`) hit 60.0 fps / 0.1% slow frames at 1080p60 with no focus flash, vs WebKit's 56.6 fps / 9.8%. All Rust (input, registry, store, platform traits) is unaffected; the BRIEF §3 "Tauri events / commands" bridge becomes Slint callbacks + `slint::invoke_from_event_loop`. Output stays 1080p60 (live gradients and shadows were too slow at 4K on the Pi 5 GPU with every toolkit; see the 4K entry below).
 - **2026-10-08, 4K output (Laith):** 4K60 works after baking the hero backdrops, tile faces and focus shadow into images on the CPU (`src/bake.rs`, merged from `exp/baked-hero`), so the fill-rate-bound GPU draws one backdrop layer. Bench on main (0abbe64): 4K60 59.7 fps, 0.4% > 25 ms, p95 17.4 ms (was 27.8 fps); 1080p60 60.0 fps, 0.1%, p95 17.1 ms. Default stays 1080p60 for now; `LUMEN_MODE=3840x2160@60` selects 4K.
+- **2026-10-08, M2 gate cut (Laith):** M2 closes on the TV remote alone. The real controller (PS5 DualSense over USB/BT; `playstation.toml` already maps it) and keyboard checks move to M5 polish.
 - **2026-10-08, license (Laith):** Lumen is published under GPLv3, since Slint's royalty-free license excludes embedded systems.
 - **2026-10-08, fallback web clients:** `fallback_url` (Jellyfin/Plex web in kiosk mode) can no longer open in a Tauri webview window. It needs a separate kiosk browser (Cog/WPE or Chromium); the choice is made in M3, and only if no native client works.
 
@@ -19,13 +20,15 @@ One cargo crate at the repo root (`src/` + `ui/*.slint`) replaces `src-tauri/` +
 **Gate:** the Slint home screen built from main, run from `lumen-test.service` at 1080p60, averages ≥ 59 fps with < 2% of frames > 25 ms in the 30 s bench, and Laith sees no focus artifacts on the TV.
 **Result:** 60.0 fps, 0.1% > 25 ms, p95 17.6 ms, worst 33.9 ms; idle 60.3 fps (same as the spike). Laith: TV looks good, no artifacts. Pass.
 
-## M2 — Input layer
+## M2 — Input layer ✅ (2026-10-08, remote only)
 evdev reader in Rust (non-grabbing), hotplug via inotify on `/dev/input`, per-device TOML mappings (`config/input/*.toml`), normalized events to the UI (reader thread → `slint::invoke_from_event_loop` → UI callbacks), hold-to-repeat with acceleration, stick deadzone, long-press Back → Home. Spatial navigation in the UI. CEC remote buttons verified with `cec-ctl` + `evtest`; `cec-remote.toml` generated from what the TV actually sends.
 **Gate:** TV remote, Xbox controller and keyboard each navigate the tile row and fire Select/Back/Menu/Home; unplugging and replugging (or BT disconnect/reconnect) the controller works without restarting Lumen; a resting stick produces zero events over 60 s.
+**Result:** passed for the TV remote only (Laith's call, see scope change). On the Pi at 4K the log shows Left/Right/Select from `vc4-hdmi-0`; Back and Home never appeared in `[input]`, so the TV may not forward them over CEC (open, M3 needs a working Home). Controller paths verified only with `examples/fake-pad.rs` (hotplug, all buttons, 60 s drift = 0).
 
 ## M3 — Registry + launching
 TOML app entries in `~/.config/lumen-tv/apps/`, launch/raise/close via a `platform::Windows` trait (labwc + wlr-foreign-toplevel), keep-alive / close-on-exit / exclusive policies, auto-return when an app exits, Home works while another app is focused. Jellyfin / Plex / Steam Link client choice verified on the Pi; if a web client is needed, pick the kiosk browser for `fallback_url` (Cog/WPE or Chromium).
 **Gate:** Home returns to Lumen from Jellyfin and from Steam Link; reselecting Jellyfin resumes the same process (same PID) in < 1 s; launching Steam Link kills running keep-alive apps; Home in Steam Link ends its process; killing an app from SSH brings Lumen to the front.
+**Measured by:** G1–G6 in the M3 plan: Home and resume < 1000 ms over 5/5 trials with the same PID, exclusive kill within 5 s, auto-return within 2000 ms of a kill, and input aimed at an app never drives Lumen.
 
 ## M4 — Store
 Fetch `manifest.json` from a configurable URL, Store screen, details screen showing the exact install/uninstall commands, confirm-before-run, streamed progress + error states, registry entry written on success, home grid updates live.
