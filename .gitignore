@@ -1,2 +1,3 @@
-target/
+# cargo build output (also extra target dirs, e.g. CARGO_TARGET_DIR=target-base)
+/target*/
 .DS_Store
