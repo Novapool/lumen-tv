@@ -16,5 +16,5 @@ Lumen: an Apple TV-style launcher for pitv (Rust + Slint UI, evdev input, labwc 
 - Build milestone by milestone and stop after each one for Laith to test on the TV.
 - Kodi stays the boot default until M5 passes. Test Lumen through a unit that `Conflicts=kodi.service`.
 - All Pi-specific code lives behind traits in `src/platform/`.
-- Output is 1080p60; use the femtovg renderer. Follow the Slint rules in IN-PROGRESS.md (no animated shadow size/blur).
+- Output defaults to 1080p60; 4K60 also works (`LUMEN_MODE=3840x2160@60` in `~/.config/lumen-tv/env`). Use the femtovg renderer. Follow the Slint rules in IN-PROGRESS.md (bake gradients/shadows into images, no animated shadow size/blur).
 - Never run store install commands without showing them first.

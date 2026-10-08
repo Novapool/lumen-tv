@@ -1,8 +1,8 @@
 #!/bin/sh
-# Run by labwc (-S) inside the Lumen session. Sets the TV to 1080p60 first:
-# no UI toolkit holds 60 fps at 4K on the Pi 5 GPU (fill-rate bound, see
-# MILESTONES M1), and the Pi decodes video above 1080p in software anyway.
-# The TV upscales.
+# Run by labwc (-S) inside the Lumen session. Sets the TV mode first, 1080p60
+# by default (the TV upscales; the Pi decodes video above 1080p in software
+# anyway). 4K60 also holds 60 fps now that gradients and shadows are baked
+# into images (src/bake.rs): set LUMEN_MODE=3840x2160@60 to use it.
 # LUMEN_BIN runs another build (e.g. an experiment built in a separate folder).
 OUT="${LUMEN_OUTPUT:-HDMI-A-1}"
 MODE="${LUMEN_MODE:-1920x1080@60}"

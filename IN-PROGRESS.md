@@ -41,16 +41,21 @@ Decisions so far:
 - (2026-10-08) UI is Slint 1.18, femtovg renderer, winit backend under labwc. Not Skia: slower at both resolutions, and its default wgpu/Vulkan surface never fires the rendering notifier.
 - (2026-10-08) Lumen is GPLv3 (Slint's royalty-free license excludes embedded systems).
 - (2026-10-08) Port before M2. Kiosk browser for `fallback_url` decided in M3.
+- (2026-10-08) 4K60 works with baked images (59.7 fps, 0.4% slow). Default output stays 1080p60 for now (Laith); `LUMEN_MODE=3840x2160@60` picks 4K.
 - (2026-10-06) Kodi stays as a Lumen tile (close-on-exit, exclusive) for Games/YouTube/Mirror until replacements exist.
 - (2026-10-06) Rust 1.99 via rustup (`~/.cargo/bin`) on the Pi and the Mac (not on the Mac's PATH). apt packages need Laith's sudo.
 - (2026-10-06) Store manifest lives in this repo: github.com/Novapool/lumen-tv, `store/manifest.json` (raw URL once pushed).
-- (2026-10-06) Pi 5 has 8 GB RAM. laith is already in the `input` group. TV native mode is 3840x2160; Lumen sets 1080p60 with `wlr-randr` (4K fails with every toolkit).
+- (2026-10-06) Pi 5 has 8 GB RAM. laith is already in the `input` group. TV native mode is 3840x2160; Lumen sets 1080p60 by default with `wlr-randr` (`LUMEN_MODE` overrides it).
 
 ## Slint rules (from the spike)
 - Never animate a drop shadow's size or blur: the blur re-renders every frame (56.5 fps, 5.2% slow). Keep the shadow box fixed and fade it with `opacity`. Slint draws no shadow for an unfilled Rectangle, so fill it and hide it behind the face.
 - Slint redraws only on change: frame stats count only frames while something is animating.
 - No "hold" animation workaround needed (that was a WebKit compositor bug).
 - Radial gradients are circles only.
+- Bake gradients, gloss and shadows into images (`src/bake.rs`); the Pi 5 GPU is fill-rate bound and can't draw them live at 4K.
+- Slint drops a texture once nothing shows it, so keep the images that change per focus move small (heroes are 640×234 and scaled up).
+- Never crossfade two full-screen layers on the GPU: blend the two baked backdrops on the CPU (`bake::blend`) and draw one Image.
+- `if`-created drop-shadow elements re-blur every time they are created; use one fixed shadow Image and fade it.
 
 ## Current Work
 - **M2 — Input layer** (2026-10-08). Done: `src/input/` (evdev readers, inotify hotplug, mapping files, repeat 400 ms then 160 → 60 ms, stick deadzone 0.4 with hysteresis, long-press Back 0.8 s → Home), `config/input/*.toml` (keyboard, cec-remote, gamepad, xbox, playstation; user overrides by file name in `~/.config/lumen-tv/input/`), `platform::Tv` (Lumen registers with the TV over CEC as Playback "Lumen" at startup and becomes the active input, like Kodi). Window key handling is off on the Pi (`key-nav`); the Mac build still navigates with its own keys.
@@ -75,6 +80,6 @@ Decisions so far:
 2. Pair/plug an Xbox controller, run the M2 gate (MILESTONES), then remove `LUMEN_INPUT_DEBUG` from the env file.
 
 ## Recently Completed
+- 4K bake merge (2026-10-08): `exp/baked-hero` merged into main (0abbe64). 4K60 59.7 fps / 0.4% > 25 ms / p95 17.4 ms (was 27.8 fps); 1080p60 60.0 / 0.1% / p95 17.1. M2 input kept; HDMI remote verified at 4K. Default stays 1080p. Branch, worktree and Pi build folder removed.
 - M1.5 Slint port (2026-10-08): gate passed (60.0 fps, 0.1% > 25 ms, Laith: no artifacts). Spike branch tagged `spike-slint-2026-10-08`, worktree and Pi test files removed.
-- Slint spike (2026-10-08): passed its gate at 1080p (femtovg 60.0 fps, 0.1% slow, no flash); 4K fails everywhere. Laith chose Slint. Report: `git show spike-slint-2026-10-08:spike-slint/REPORT.md`.
-- M1 skeleton + perf (2026-10-06): passed revised gate at 1080p (55.9 fps); 4K not viable in WebKit. Details in MILESTONES.md.
+- Slint spike (2026-10-08): passed its gate at 1080p (femtovg 60.0 fps, 0.1% slow, no flash); 4K too slow with live effects (fixed later by baking). Laith chose Slint. Report: `git show spike-slint-2026-10-08:spike-slint/REPORT.md`.
