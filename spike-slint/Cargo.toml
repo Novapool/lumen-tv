@@ -13,8 +13,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 slint-build = "1.18"
 
 [features]
-# cargo build --release --features skia   (SLINT_BACKEND=winit-skia)
-skia = ["slint/renderer-skia"]
+# cargo build --release --features skia   (SLINT_BACKEND=winit-skia; OpenGL first: the
+# default wgpu/Vulkan surface never fires the AfterRendering notifier)
+skia = ["slint/renderer-skia-opengl"]
 # cargo build --release --features kms    (SLINT_BACKEND=linuxkms-femtovg, needs libinput/udev/gbm/drm -dev)
 kms = ["slint/backend-linuxkms-noseat", "slint/unstable-libinput-09"]
 
