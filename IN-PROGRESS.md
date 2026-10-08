@@ -3,7 +3,7 @@
 Last updated: 2026-10-08
 
 ## Where we are
-M1.5 done (2026-10-08): Lumen's UI is now Slint (femtovg) on main, 60.0 fps / 0.1% slow at 1080p60 on the TV, no focus artifacts. Tauri, Svelte and WebKitGTK are gone. Next: **M2, input layer**. Kodi still boots by default; Lumen runs from `lumen-test.service`.
+M1.5 done (2026-10-08): Lumen's UI is now Slint (femtovg) on main, 60.0 fps / 0.1% slow at 1080p60 on the TV, no focus artifacts. Tauri, Svelte and WebKitGTK are gone. Now on **M2, input layer**: built and tested with a virtual controller; waiting on real remote/controller checks at the TV. Kodi still boots by default; Lumen runs from `lumen-test.service`.
 
 ## Active Plan
 Build M2 → M5 in order (see MILESTONES.md), stopping after each one for a TV test.
@@ -53,11 +53,15 @@ Decisions so far:
 - Radial gradients are circles only.
 
 ## Current Work
-- **M2 — Input layer** (not started). See MILESTONES.md M2.
+- **M2 — Input layer** (2026-10-08). Done: `src/input/` (evdev readers, inotify hotplug, mapping files, repeat 400 ms then 160 → 60 ms, stick deadzone 0.4 with hysteresis, long-press Back 0.8 s → Home), `config/input/*.toml` (keyboard, cec-remote, gamepad, xbox, playstation; user overrides by file name in `~/.config/lumen-tv/input/`), `platform::Tv` (Lumen registers with the TV over CEC as Playback "Lumen" at startup and becomes the active input, like Kodi). Window key handling is off on the Pi (`key-nav`); the Mac build still navigates with its own keys.
+  - Verified on pitv with `examples/fake-pad.rs` (virtual Xbox pad via uinput): hotplug, every mapped button, long-press Home, accelerating repeat, 60 s drift → 0 events, unplug. 15 unit tests pass on the Pi.
+  - Left for the gate (needs Laith at the TV): real CEC remote presses (`cec-remote.toml` is a draft from the kernel keymap), a real Xbox controller over USB and Bluetooth incl. disconnect/reconnect, keyboard. `~/.config/lumen-tv/env` has `LUMEN_INPUT_DEBUG=1`: each action shows at the bottom of the screen and logs `[input] <Action> from "<device>"`.
+  - Open: spatial navigation for multi-row screens is deferred until a screen has more than one row (M4 Store); the home row only uses Left/Right (Home jumps to the first tile).
 
 ## Known issues
 - After `systemctl stop lumen-test`, its ExecStopPost starts Kodi: wait until kodi is active before starting a test unit again.
-- `pitv.local` (mDNS) doesn't resolve when the Mac is on the home network through the VPN. Use: `ssh -o HostKeyAlias=pitv.local laith@192.168.1.60`.
+- `ssh pitv` uses the IP (192.168.1.60), since `pitv.local` (mDNS) doesn't resolve over the VPN.
+- `/dev/uinput` is writable by the input group: `cargo run --release --example fake-pad [secs]` on the Pi tests the input layer without a controller.
 - Perf lines log under `labwc[...]`, so grep the whole journal, not `-u lumen-test`.
 - Don't run wf-recorder on the Pi: its frames come out garbled and it froze the TV output.
 - History: the WebKit focus-change flash/snap (compositor drew pre-animation values for ~2 frames) was patched with "hold" animations (95dc6f9); gone since the Slint port.
@@ -67,7 +71,8 @@ Decisions so far:
 - (none)
 
 ## Next Steps
-1. M2: check what the CEC remote and controller actually send (`cec-ctl`, `evtest`), then build the evdev reader + mappings.
+1. At the TV: `evtest /dev/input/event5` while pressing every remote button (Up/Down/Left/Right, OK, Back, Home, Menu/Settings, Play/Pause, hold Right); trim `cec-remote.toml` to what arrives. If a button never shows up, check whether the TV sends it with `sudo cec-ctl -d /dev/cec0 -M` (monitor needs root).
+2. Pair/plug an Xbox controller, run the M2 gate (MILESTONES), then remove `LUMEN_INPUT_DEBUG` from the env file.
 
 ## Recently Completed
 - M1.5 Slint port (2026-10-08): gate passed (60.0 fps, 0.1% > 25 ms, Laith: no artifacts). Spike branch tagged `spike-slint-2026-10-08`, worktree and Pi test files removed.

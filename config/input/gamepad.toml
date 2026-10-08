@@ -1,0 +1,23 @@
+# Any gamepad the kernel exposes with the standard Linux layout (BTN_SOUTH =
+# bottom face button). Brand files (xbox.toml, playstation.toml) take
+# precedence when they match.
+deadzone = 0.4
+
+[match]
+class = "gamepad"
+
+[keys]
+BTN_SOUTH = "Select"
+BTN_EAST = "Back"
+BTN_START = "Menu"
+BTN_MODE = "Home"
+BTN_DPAD_UP = "Up"
+BTN_DPAD_DOWN = "Down"
+BTN_DPAD_LEFT = "Left"
+BTN_DPAD_RIGHT = "Right"
+
+[axes]
+ABS_X = ["Left", "Right"]
+ABS_Y = ["Up", "Down"]
+ABS_HAT0X = ["Left", "Right"]
+ABS_HAT0Y = ["Up", "Down"]

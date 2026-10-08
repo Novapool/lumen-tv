@@ -1,0 +1,24 @@
+# Xbox controllers: xpad over USB, hid-microsoft / xpadneo over Bluetooth.
+# A = Select, B = Back, Menu (≡) = Menu, Xbox button = Home.
+deadzone = 0.4
+
+[match]
+class = "gamepad"
+ids = ["045e"]
+names = ["Xbox", "X-Box"]
+
+[keys]
+BTN_SOUTH = "Select"
+BTN_EAST = "Back"
+BTN_START = "Menu"
+BTN_MODE = "Home"
+BTN_DPAD_UP = "Up"
+BTN_DPAD_DOWN = "Down"
+BTN_DPAD_LEFT = "Left"
+BTN_DPAD_RIGHT = "Right"
+
+[axes]
+ABS_X = ["Left", "Right"]
+ABS_Y = ["Up", "Down"]
+ABS_HAT0X = ["Left", "Right"]
+ABS_HAT0Y = ["Up", "Down"]

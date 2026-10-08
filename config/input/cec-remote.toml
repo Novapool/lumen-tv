@@ -1,0 +1,25 @@
+# The TV remote over HDMI-CEC. The Pi's HDMI driver turns CEC "User Control"
+# messages into key events on the "vc4-hdmi-0" input device (kernel keymap
+# rc-cec). Lumen registers with the TV at startup so the TV sends them.
+# DRAFT: written from the keymap the device reports. Check against what the
+# LG remote actually sends (evtest /dev/input/event5) and trim to match.
+[match]
+names = ["vc4-hdmi"]
+
+[keys]
+KEY_UP = "Up"
+KEY_DOWN = "Down"
+KEY_LEFT = "Left"
+KEY_RIGHT = "Right"
+KEY_OK = "Select"
+KEY_ENTER = "Select"
+KEY_EXIT = "Back"
+KEY_BACK = "Back"
+KEY_ROOT_MENU = "Home"
+KEY_MEDIA_TOP_MENU = "Home"
+KEY_MENU = "Menu"
+KEY_SETUP = "Menu"
+KEY_CONTEXT_MENU = "Menu"
+KEY_PLAYPAUSE = "PlayPause"
+KEY_PLAYCD = "PlayPause"
+KEY_PAUSECD = "PlayPause"

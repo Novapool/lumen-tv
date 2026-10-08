@@ -1,0 +1,20 @@
+# Any keyboard (a device with letter keys and Enter). Hold Esc for Home.
+[match]
+class = "keyboard"
+
+[keys]
+KEY_UP = "Up"
+KEY_DOWN = "Down"
+KEY_LEFT = "Left"
+KEY_RIGHT = "Right"
+KEY_ENTER = "Select"
+KEY_KPENTER = "Select"
+KEY_SPACE = "Select"
+KEY_ESC = "Back"
+KEY_BACKSPACE = "Back"
+KEY_F1 = "Home"
+KEY_LEFTMETA = "Home"
+KEY_HOMEPAGE = "Home"
+KEY_COMPOSE = "Menu"
+KEY_M = "Menu"
+KEY_PLAYPAUSE = "PlayPause"

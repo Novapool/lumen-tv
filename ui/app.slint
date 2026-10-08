@@ -1,9 +1,13 @@
 // Lumen's window: the home screen (hero backdrop, title, tile row) and the
 // benchmark readout. Everything is sized in rem = 1/120 of the window width
-// (16 px at 1080p). Keyboard input lives here until M2 delivers evdev events.
+// (16 px at 1080p). Input arrives through nav(): from the evdev input layer
+// on the Pi, or from the window's own keys elsewhere (key-nav).
 
 import { Theme } from "theme.slint";
 import { App, Tile } from "tile.slint";
+
+// The normalized input events (Rust: input::Action).
+export enum NavEvent { up, down, left, right, select, back, home, menu, play-pause }
 
 export component AppWindow inherits Window {
     title: "Lumen";
@@ -12,6 +16,11 @@ export component AppWindow inherits Window {
 
     in property <string> clock: "";
     in property <bool> input-locked: false; // during the benchmark
+    // Navigate with the window's own key events. Off on the Pi, where the
+    // evdev input layer already sees the keyboard.
+    in property <bool> key-nav: true;
+    // LUMEN_INPUT_DEBUG=1: the last action and its device, briefly.
+    in-out property <string> input-debug: "";
     in property <string> perf-text: "";
     in property <string> perf-detail: "";
     in property <int> perf-verdict: 0; // 0 none, 1 pass, -1 fail
@@ -70,6 +79,23 @@ export component AppWindow inherits Window {
         return true;
     }
 
+    public function nav(e: NavEvent) {
+        if (root.input-locked) {
+            return;
+        }
+        if (e == NavEvent.right) {
+            root.move(1);
+        } else if (e == NavEvent.left) {
+            root.move(-1);
+        } else if (e == NavEvent.select) {
+            root.press();
+        } else if (e == NavEvent.home && root.focused != 0) {
+            root.move(-root.focused);
+        }
+        // Up/Down: a single row has nowhere to go. Back/Menu: no screen to
+        // leave or menu to open yet.
+    }
+
     forward-focus: keys;
     keys := FocusScope {
         key-pressed(event) => {
@@ -77,22 +103,33 @@ export component AppWindow inherits Window {
                 root.quit();
                 return accept;
             }
-            if (root.input-locked) {
-                return reject;
+            if (root.key-nav) {
+                if (event.text == Key.UpArrow) {
+                    root.nav(NavEvent.up);
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    root.nav(NavEvent.down);
+                    return accept;
+                }
+                if (event.text == Key.LeftArrow) {
+                    root.nav(NavEvent.left);
+                    return accept;
+                }
+                if (event.text == Key.RightArrow) {
+                    root.nav(NavEvent.right);
+                    return accept;
+                }
+                if (event.text == Key.Return || event.text == " ") {
+                    root.nav(NavEvent.select);
+                    return accept;
+                }
+                if (event.text == Key.Escape) {
+                    root.nav(NavEvent.back);
+                    return accept;
+                }
             }
-            if (event.text == Key.RightArrow) {
-                root.move(1);
-                return accept;
-            }
-            if (event.text == Key.LeftArrow) {
-                root.move(-1);
-                return accept;
-            }
-            if (event.text == Key.Return || event.text == " ") {
-                root.press();
-                return accept;
-            }
-            if (event.text == "b" || event.text == "B") {
+            if (!root.input-locked && (event.text == "b" || event.text == "B")) {
                 root.bench();
                 return accept;
             }
@@ -198,6 +235,29 @@ export component AppWindow inherits Window {
             rem: root.rem;
             focused: i == root.focused;
             pressed: root.pressed && i == root.focused;
+        }
+    }
+
+    if root.input-debug != "": Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - 7 * root.rem;
+        width: debug-text.preferred-width + 3 * root.rem;
+        height: 3.4 * root.rem;
+        border-radius: self.height / 2;
+        background: #ffffff1f;
+
+        debug-text := Text {
+            text: root.input-debug;
+            font-size: 1.4 * root.rem;
+            color: Theme.text;
+        }
+    }
+
+    Timer {
+        interval: 1500ms;
+        running: root.input-debug != "";
+        triggered => {
+            root.input-debug = "";
         }
     }
 

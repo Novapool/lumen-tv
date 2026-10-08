@@ -1,0 +1,22 @@
+# PlayStation controllers (hid-playstation / hid-sony). Cross = Select,
+# Circle = Back, Options = Menu, PS button = Home. The touchpad and motion
+# sensors are separate devices without face buttons, so class = "gamepad"
+# keeps them out.
+deadzone = 0.4
+
+[match]
+class = "gamepad"
+ids = ["054c"]
+names = ["DualSense", "DualShock", "Sony", "Wireless Controller"]
+
+[keys]
+BTN_SOUTH = "Select"
+BTN_EAST = "Back"
+BTN_START = "Menu"
+BTN_MODE = "Home"
+
+[axes]
+ABS_X = ["Left", "Right"]
+ABS_Y = ["Up", "Down"]
+ABS_HAT0X = ["Left", "Right"]
+ABS_HAT0Y = ["Up", "Down"]

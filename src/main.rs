@@ -1,8 +1,13 @@
-// Lumen: an Apple TV-style launcher for the Raspberry Pi 5. M1.5: the home
-// screen in Slint plus the frame-time bench. Input, registry, store and
-// platform modules arrive in M2-M4.
+// Lumen: an Apple TV-style launcher for the Raspberry Pi 5. The home screen
+// in Slint, the evdev input layer, and the frame-time bench. Registry and
+// store arrive in M3-M4.
 
 mod bench;
+// Input and platform code runs on the Pi (Linux) only; elsewhere, e.g. UI
+// work on the Mac, the window's own key events drive navigation.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod input;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod platform;
 
 use std::time::Duration;
@@ -45,6 +50,9 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
 
+    #[cfg(target_os = "linux")]
+    start_input(&ui);
+
     let bench = bench::Bench::attach(&ui);
     let weak = ui.as_weak();
     let b = bench.clone();
@@ -66,4 +74,43 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     ui.run()
+}
+
+/// Starts the evdev input layer and the TV remote, and hands navigation to them.
+#[cfg(target_os = "linux")]
+fn start_input(ui: &AppWindow) {
+    use input::Action;
+    use platform::Tv;
+
+    std::thread::spawn(|| {
+        if let Err(e) = platform::pi::PiTv::default().claim_remote() {
+            eprintln!("[input] TV remote not claimed: {e}");
+        }
+    });
+
+    let debug = std::env::var("LUMEN_INPUT_DEBUG").is_ok_and(|v| v == "1");
+    let weak = ui.as_weak();
+    input::start(move |action, device| {
+        if debug {
+            println!("[input] {action:?} from \"{device}\"");
+        }
+        let label = debug.then(|| format!("{action:?} · {device}"));
+        let _ = weak.upgrade_in_event_loop(move |ui| {
+            ui.invoke_nav(match action {
+                Action::Up => NavEvent::Up,
+                Action::Down => NavEvent::Down,
+                Action::Left => NavEvent::Left,
+                Action::Right => NavEvent::Right,
+                Action::Select => NavEvent::Select,
+                Action::Back => NavEvent::Back,
+                Action::Home => NavEvent::Home,
+                Action::Menu => NavEvent::Menu,
+                Action::PlayPause => NavEvent::PlayPause,
+            });
+            if let Some(label) = label {
+                ui.set_input_debug(label.into());
+            }
+        });
+    });
+    ui.set_key_nav(false);
 }
