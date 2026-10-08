@@ -57,7 +57,7 @@ Decisions so far:
 
 ## Known issues
 - After `systemctl stop lumen-test`, its ExecStopPost starts Kodi: wait until kodi is active before starting a test unit again.
-- `pitv.local` (mDNS) sometimes doesn't resolve from the Mac. Fallback: `ssh -o HostKeyAlias=pitv.local laith@192.168.1.60`.
+- `pitv.local` (mDNS) doesn't resolve when the Mac is on the home network through the VPN. Use: `ssh -o HostKeyAlias=pitv.local laith@192.168.1.60`.
 - Perf lines log under `labwc[...]`, so grep the whole journal, not `-u lumen-test`.
 - Don't run wf-recorder on the Pi: its frames come out garbled and it froze the TV output.
 - History: the WebKit focus-change flash/snap (compositor drew pre-animation values for ~2 frames) was patched with "hold" animations (95dc6f9); gone since the Slint port.
