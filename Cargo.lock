@@ -2327,6 +2327,7 @@ dependencies = [
  "evdev",
  "inotify",
  "libc",
+ "resvg",
  "serde",
  "slint",
  "slint-build",
