@@ -67,6 +67,11 @@ Decisions so far:
 - **M3 — Registry + launching + icons** (started 2026-10-08). Plan: `AGENT_JOBS.md` (transient).
   - Phase 0: done: `examples/toplevels.rs` + `examples/press.rs` (78822fd; foreign-toplevel v3, socket `wayland-0`, Lumen's window app_id "" / title "Lumen"). Client spike done (see Settled).
   - Phase 1: `platform::Windows` ∥ registry + lifecycle + process control ∥ icons (resolve + bake); input gating is a filter in main.rs (2.1), no `src/input/` changes.
+  - **Paused 2026-10-09 (Laith off the VPN, Pi unreachable).** Phase 1 builders stopped; work sits in git worktrees under `.claude/worktrees/`, all based on 359e3d8:
+    - 1.1 Windows: `worktree-agent-acc448ea3fe4f7a95`, rebased, **uncommitted** (staged `src/platform/mod.rs`, new `toplevel.rs`); Pi tests not confirmed.
+    - 1.2 registry/lifecycle: `worktree-agent-a7eeff02354602697` @ 66c4ac6; final Pi test run not confirmed.
+    - 1.3 icons: `worktree-agent-a44b5ed00e18a8aa8` @ 74e5c6c; final Pi test run not confirmed.
+    - To resume: re-run Pi tests per job, finish/commit 1.1, merge the three branches, then Phase 2. Remove `~/lumen-m3-j1{1,2,3}` on the Pi afterwards.
   - Phase 2: wire into main + UI. Phase 3: review/simplify/tests/docs. Phase 4: gate G1–G6 on the Pi, then at the TV.
   - Every app runs as a child of Lumen inside labwc (no systemd units). While an app is in front, Lumen acts on Home alone (keyboard).
 
