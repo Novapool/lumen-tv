@@ -1,12 +1,12 @@
 # In Progress — Lumen (lumen-tv)
 
-Last updated: 2026-10-08
+Last updated: 2026-10-09
 
 ## Where we are
-M1.5 done (2026-10-08): Lumen's UI is now Slint (femtovg) on main, 60.0 fps / 0.1% slow at 1080p60 on the TV, no focus artifacts. Tauri, Svelte and WebKitGTK are gone. M2 closed on the TV remote (controller deferred to M5). Now on **M3, registry + launching**. Kodi still boots by default; Lumen runs from `lumen-test.service`.
+M1.5 done (2026-10-08): Lumen's UI is now Slint (femtovg) on main, 60.0 fps / 0.1% slow at 1080p60 on the TV, no focus artifacts. Tauri, Svelte and WebKitGTK are gone. M2 closed on the TV remote. The input layer is **docked** (2026-10-09): keyboard is the dev control, no new input work until M5's input polish. Now on **M3, registry + launching + icons**, then M3.5 Settings/diagnostics. Kodi still boots by default; Lumen runs from `lumen-test.service`.
 
 ## Active Plan
-Build M2 → M5 in order (see MILESTONES.md), stopping after each one for a TV test.
+Build M3 → M3.5 → M4 → M5 in order (see MILESTONES.md), stopping after each one for a TV test.
 
 Planned layout:
 ```
@@ -58,11 +58,11 @@ Decisions so far:
 - `if`-created drop-shadow elements re-blur every time they are created; use one fixed shadow Image and fade it.
 
 ## Current Work
-- **M3 — Registry + launching** (started 2026-10-08). Plan: `AGENT_JOBS.md` (transient).
-  - Phase 0: `examples/toplevels.rs` + `examples/press.rs` (prove wlr-foreign-toplevel, scripted keys); Laith at the TV settles which CEC keys arrive (Back/Home never reached Lumen) and decides installs (xwayland for Steam Link, flatpak + Jellyfin Desktop, chromium/cog for Plex web); client spike in the Lumen session.
-  - Phase 1: `platform::Windows` (labwc toplevels) ∥ registry + lifecycle planner + process control ∥ input gating + Home fallback + CEC claim.
+- **M3 — Registry + launching + icons** (started 2026-10-08). Plan: `AGENT_JOBS.md` (transient).
+  - Phase 0: done: `examples/toplevels.rs` + `examples/press.rs` (78822fd; labwc advertises foreign-toplevel v3, socket `wayland-0`, Lumen's window has app_id "" and title "Lumen"). Installed: xwayland, flatpak, chromium, Jellyfin Desktop (Flathub user). Next: client spike in the Lumen session.
+  - Phase 1: `platform::Windows` (labwc toplevels) ∥ registry + lifecycle planner + process control + icons ∥ minimal input gating (only Home while an app is in front).
   - Phase 2: wire into main + UI. Phase 3: review/simplify/tests/docs. Phase 4: gate G1–G6 on the Pi, then at the TV.
-  - Every app runs as a child of Lumen inside labwc (no systemd units). Input from the remote is gated: only Home acts while an app is in front.
+  - Every app runs as a child of Lumen inside labwc (no systemd units). While an app is in front, Lumen acts on Home alone (keyboard).
 
 ## Known issues
 - After `systemctl stop lumen-test`, its ExecStopPost starts Kodi: wait until kodi is active before starting a test unit again.
@@ -77,10 +77,11 @@ Decisions so far:
 - (none)
 
 ## Next Steps
-1. (M3 Job 0.2) At the TV: `evtest /dev/input/event5` while pressing every remote button (Up/Down/Left/Right, OK, Back, Home, Menu/Settings, Play/Pause, hold Right); trim `cec-remote.toml` to what arrives. If a button never shows up, check whether the TV sends it with `sudo cec-ctl -d /dev/cec0 -M` (monitor needs root).
-2. M5: real controller (PS5 DualSense) + keyboard checks deferred from M2.
+1. M3 Job 0.3: client spike in the Lumen session (launch line, app_id, PID model, close, fullscreen, audio) for Jellyfin, Plex-in-Chromium, Steam Link, Kodi.
+2. M3 Phase 1 builders.
+3. Parked for M5 input polish (don't work on these before then): CEC Back/Home (`evtest /dev/input/event5` + `sudo cec-ctl -d /dev/cec0 -M`, try `--vendor-id 0x00e091`), remote Home fallback, PS5 controller over USB/BT.
 
 ## Recently Completed
-- 4K bake merge (2026-10-08): `exp/baked-hero` merged into main (0abbe64). 4K60 59.7 fps / 0.4% > 25 ms / p95 17.4 ms (was 27.8 fps); 1080p60 60.0 / 0.1% / p95 17.1. M2 input kept; HDMI remote verified at 4K. Default stays 1080p. Branch and worktree removed; `~/lumen-bake` on the Pi awaits Laith's OK to delete.
+- 4K bake merge (2026-10-08): `exp/baked-hero` merged into main (0abbe64). 4K60 59.7 fps / 0.4% > 25 ms / p95 17.4 ms (was 27.8 fps); 1080p60 60.0 / 0.1% / p95 17.1. M2 input kept; HDMI remote verified at 4K. Default stays 1080p. Branch, worktree and `~/lumen-bake` on the Pi removed.
 - M1.5 Slint port (2026-10-08): gate passed (60.0 fps, 0.1% > 25 ms, Laith: no artifacts). Spike branch tagged `spike-slint-2026-10-08`, worktree and Pi test files removed.
 - Slint spike (2026-10-08): passed its gate at 1080p (femtovg 60.0 fps, 0.1% slow, no flash); 4K too slow with live effects (fixed later by baking). Laith chose Slint. Report: `git show spike-slint-2026-10-08:spike-slint/REPORT.md`.
