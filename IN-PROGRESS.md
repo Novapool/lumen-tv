@@ -47,6 +47,12 @@ Decisions so far:
 - (2026-10-06) Store manifest lives in this repo: github.com/Novapool/lumen-tv, `store/manifest.json` (raw URL once pushed).
 - (2026-10-06) Pi 5 has 8 GB RAM. laith is already in the `input` group. TV native mode is 3840x2160; Lumen sets 1080p60 by default with `wlr-randr` (`LUMEN_MODE` overrides it).
 
+- (2026-10-09) Clients run as children of Lumen in labwc (env XDG_RUNTIME_DIR=/run/user/1000, WAYLAND_DISPLAY=wayland-0, DISPLAY=:0 via Xwayland). All raise/close/fullscreen via foreign-toplevel:
+  - Jellyfin: `flatpak run org.jellyfin.JellyfinDesktop --fullscreen --tv`, app_id `org.jellyfin.JellyfinDesktop`, ~0.8 GB, closes in 0.4 s. Likely silent (no /dev/snd, no Pulse) and mpv logged VO errors: playback unverified.
+  - Plex: `chromium --kiosk --ozone-platform=wayland --noerrdialogs <url>`, app_id `chromium`, ~1.7 GB, F1 opens Chrome help (needs an rc.xml swallow).
+  - Steam Link: `steamlink` (Xwayland), app_id `SteamLink`; launcher script exits at once, real app `~/.local/share/SteamLink/bin/shell` reparented to PID 1.
+  - Kodi: `kodi --windowing=wayland`, app_id `Kodi`, real app `kodi.bin`, close takes 4.5 s.
+
 ## Slint rules (from the spike)
 - Never animate a drop shadow's size or blur: the blur re-renders every frame (56.5 fps, 5.2% slow). Keep the shadow box fixed and fade it with `opacity`. Slint draws no shadow for an unfilled Rectangle, so fill it and hide it behind the face.
 - Slint redraws only on change: frame stats count only frames while something is animating.
@@ -59,8 +65,8 @@ Decisions so far:
 
 ## Current Work
 - **M3 — Registry + launching + icons** (started 2026-10-08). Plan: `AGENT_JOBS.md` (transient).
-  - Phase 0: done: `examples/toplevels.rs` + `examples/press.rs` (78822fd; labwc advertises foreign-toplevel v3, socket `wayland-0`, Lumen's window has app_id "" and title "Lumen"). Installed: xwayland, flatpak, chromium, Jellyfin Desktop (Flathub user). Next: client spike in the Lumen session.
-  - Phase 1: `platform::Windows` (labwc toplevels) ∥ registry + lifecycle planner + process control + icons ∥ minimal input gating (only Home while an app is in front).
+  - Phase 0: done: `examples/toplevels.rs` + `examples/press.rs` (78822fd; foreign-toplevel v3, socket `wayland-0`, Lumen's window app_id "" / title "Lumen"). Client spike done (see Settled).
+  - Phase 1: `platform::Windows` ∥ registry + lifecycle + process control ∥ icons (resolve + bake); input gating is a filter in main.rs (2.1), no `src/input/` changes.
   - Phase 2: wire into main + UI. Phase 3: review/simplify/tests/docs. Phase 4: gate G1–G6 on the Pi, then at the TV.
   - Every app runs as a child of Lumen inside labwc (no systemd units). While an app is in front, Lumen acts on Home alone (keyboard).
 
