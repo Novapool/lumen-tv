@@ -2,8 +2,12 @@
 // in Slint, the evdev input layer, and the frame-time bench. Registry and
 // store arrive in M3-M4.
 
+#[allow(dead_code)]
+mod apps;
 mod bench;
 mod bake;
+#[allow(dead_code)]
+mod registry;
 // Input and platform code runs on the Pi (Linux) only; elsewhere, e.g. UI
 // work on the Mac, the window's own key events drive navigation.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

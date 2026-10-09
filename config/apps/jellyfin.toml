@@ -1,0 +1,13 @@
+# Jellyfin Desktop (Flathub, user install).
+# audio/playback unverified (flatpak has no /dev/snd, no Pulse server)
+id = "jellyfin"
+name = "Jellyfin"
+launch = "flatpak run org.jellyfin.JellyfinDesktop --fullscreen --tv"
+# Used if `flatpak` isn't installed: the web UI in the kiosk browser.
+fallback_url = "http://192.168.5.174:8096"
+background = "keep-alive"
+app_id = "org.jellyfin.JellyfinDesktop"
+icon = "org.jellyfin.JellyfinDesktop"
+glyph = "J"
+colors = ["#6b2fb3", "#00a4dc"]
+order = 10
