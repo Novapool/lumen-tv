@@ -38,14 +38,6 @@ impl Roots {
     }
 }
 
-/// `~/.config/lumen-tv` (Job 2.1 unifies this with the registry's helper).
-pub fn config_dir() -> PathBuf {
-    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()) {
-        return x.join("lumen-tv");
-    }
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".config/lumen-tv")
-}
-
 /// A decoded icon.
 pub enum Icon {
     Svg(usvg::Tree),
@@ -73,6 +65,7 @@ impl Icon {
 }
 
 /// Outcome of resolving and decoding one registry entry's icon (kept for M3.5).
+#[allow(dead_code)] // the path / reason are for Settings
 #[derive(Debug)]
 pub enum IconStatus {
     Ready(Icon, PathBuf),
@@ -364,8 +357,8 @@ pub(crate) mod tests {
     fn resolve_probe() {
         let roots = Roots::system();
         for name in ["kodi", "steamlink", "org.jellyfin.JellyfinDesktop", "chromium", "plex"] {
-            println!("PROBE {name}: {:?}", resolve(name, &config_dir(), &roots));
-            let _ = for_entry(name, name, &config_dir(), &roots);
+            println!("PROBE {name}: {:?}", resolve(name, &crate::registry::config_dir(), &roots));
+            let _ = for_entry(name, name, &crate::registry::config_dir(), &roots);
         }
     }
 }

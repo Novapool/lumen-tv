@@ -55,7 +55,7 @@ Decisions so far:
   - Kodi: `kodi --windowing=wayland`, app_id `Kodi`, real app `kodi.bin`, close takes 4.5 s.
 
 - (2026-10-09) Audio: PipeWire (`pipewire pipewire-pulse pipewire-alsa wireplumber`, user services) mixes for the HDMI output (vc4-hdmi-0, volume 100%). Without it Chromium's second audio stream got "Device or resource busy" and played silently (the Pi 5 HDMI PCM has no mixing). Kodi/Steam Link with pipewire-alsa still to be checked.
-- (2026-10-09) Startup race: if Lumen starts before HDMI-A-1 is ready, `start-lumen.sh` can't set the mode and Lumen's window comes up tiny, top-left, not fullscreen (labwc "invalid output set for view"). Fix in M3 Phase 2.
+- (2026-10-09) Startup race: if Lumen starts before HDMI-A-1 is ready, `start-lumen.sh` can't set the mode and Lumen's window comes up tiny, top-left, not fullscreen (labwc "invalid output set for view"). Fixed in 2.1: `start-lumen.sh` waits up to ~5 s for the output, and Lumen asks for fullscreen on its own window if it comes up windowed.
 
 ## Slint rules (from the spike)
 - Never animate a drop shadow's size or blur: the blur re-renders every frame (56.5 fps, 5.2% slow). Keep the shadow box fixed and fade it with `opacity`. Slint draws no shadow for an unfilled Rectangle, so fill it and hide it behind the face.
@@ -72,7 +72,7 @@ Decisions so far:
   - Phase 0: done: `examples/toplevels.rs` + `examples/press.rs` (78822fd; foreign-toplevel v3, socket `wayland-0`, Lumen's window app_id "" / title "Lumen"). Client spike done (see Settled).
   - Phase 1: `platform::Windows` ∥ registry + lifecycle + process control ∥ icons (resolve + bake); input gating is a filter in main.rs (2.1), no `src/input/` changes.
   - Phase 1: done and merged (Windows 5b03651, registry/lifecycle 66c4ac6, icons 74e5c6c; 76 tests pass on the Pi). Jellyfin switched to its web client (3220d84).
-  - Phase 2: wire into main + UI. Phase 3: review/simplify/tests/docs. Phase 4: gate G1–G6 on the Pi, then at the TV.
+  - Phase 2 (Job 2.1) done: registry, lifecycle, windows, icons and the Home gate are wired into main (`src/session.rs` holds the glue). Smoke test passed on the Pi (launch, F1 back, same PID on re-select, exclusive Steam Link ends Jellyfin). Phase 3: review/simplify/tests/docs. Phase 4: gate G1–G6 on the Pi, then at the TV.
   - Every app runs as a child of Lumen inside labwc (no systemd units). While an app is in front, Lumen acts on Home alone (keyboard).
 
 ## Known issues
@@ -86,6 +86,7 @@ Decisions so far:
 
 ## Blockers
 - (none)
+- Bench is thermally sensitive: the Pi 5 has no fan and sat at 75-82 C after builds (4K fell to 50-55 fps until it cooled; a cool 4K run passed at 60 fps). Let it cool before benching.
 
 ## Next Steps
 1. M3 Job 0.3: client spike in the Lumen session (launch line, app_id, PID model, close, fullscreen, audio) for Jellyfin, Plex-in-Chromium, Steam Link, Kodi.

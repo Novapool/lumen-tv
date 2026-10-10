@@ -92,6 +92,7 @@ pub enum Step {
     Terminate(Termination),
 }
 
+#[allow(dead_code)] // M3.5 Settings
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppSnapshot {
     pub id: String,
@@ -102,6 +103,7 @@ pub struct AppSnapshot {
 }
 
 /// Read-only view for the M3.5 Settings screen.
+#[allow(dead_code)] // M3.5 Settings
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub foreground: Foreground,
@@ -136,10 +138,12 @@ impl Lifecycle {
         self.running.contains_key(id)
     }
 
+    #[allow(dead_code)] // tests now, Settings in M3.5
     pub fn foreground(&self) -> &Foreground {
         &self.fg
     }
 
+    #[allow(dead_code)] // M3.5 Settings
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             foreground: self.fg.clone(),

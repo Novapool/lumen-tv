@@ -7,6 +7,8 @@
 import { Theme } from "theme.slint";
 
 export struct App {
+    id: string, // registry id; empty for the built-in Store and Settings tiles
+    running: bool, // the app is running or launching: draws the dot
     name: string,
     glyph: string,
     bg: brush, // source of the baked hero and face images
@@ -74,6 +76,16 @@ export component Tile inherits Rectangle {
             horizontal-alignment: center;
             vertical-alignment: center;
         }
+    }
+
+    // Running marker: fixed size and position, nothing animated.
+    if root.app.running: Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height + 0.9 * root.rem;
+        width: 0.7 * root.rem;
+        height: 0.7 * root.rem;
+        border-radius: self.width / 2;
+        background: Theme.text;
     }
 
     Text {

@@ -6,6 +6,15 @@
 # LUMEN_BIN runs another build (e.g. an experiment built in a separate folder).
 OUT="${LUMEN_OUTPUT:-HDMI-A-1}"
 MODE="${LUMEN_MODE:-1920x1080@60}"
+# The output may not be there yet when labwc starts Lumen (seen on the TV: the
+# mode stayed unset, labwc logged "invalid output set for view" and Lumen's
+# window came up tiny in the corner). Wait up to ~5 s for it to be listed.
+n=0
+while [ "$n" -lt 33 ] && ! wlr-randr 2>/dev/null | grep -q "^$OUT "; do
+  n=$((n + 1))
+  sleep 0.15
+done
+[ "$n" -gt 0 ] && echo "start-lumen: waited $n x 150 ms for $OUT"
 wlr-randr --output "$OUT" --mode "$MODE" || wlr-randr --output "$OUT" --mode "${MODE%@*}" \
   || echo "start-lumen: could not set $MODE on $OUT, staying at the current mode"
 wlr-randr | grep -E "^[^ ]|current" # log what we ended up with
