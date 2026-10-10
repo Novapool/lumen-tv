@@ -1,12 +1,12 @@
-# Jellyfin Desktop (Flathub, user install).
-# audio/playback unverified (flatpak has no /dev/snd, no Pulse server)
+# Jellyfin web client in the kiosk browser. Jellyfin Desktop (Flathub) was
+# tried first: its Mesa found no GPU (software rendering, unusably slow) and
+# its player showed subtitles with no video or audio.
 id = "jellyfin"
 name = "Jellyfin"
-launch = "flatpak run org.jellyfin.JellyfinDesktop --fullscreen --tv"
-# Used if `flatpak` isn't installed: the web UI in the kiosk browser.
-fallback_url = "http://192.168.5.174:8096"
+type = "url"
+url = "http://192.168.5.174:8096"
 background = "keep-alive"
-app_id = "org.jellyfin.JellyfinDesktop"
+app_id = "lumen-jellyfin"
 icon = "org.jellyfin.JellyfinDesktop"
 glyph = "J"
 colors = ["#6b2fb3", "#00a4dc"]

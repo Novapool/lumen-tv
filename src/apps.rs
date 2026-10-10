@@ -22,7 +22,10 @@ pub const LUMEN_APP_ID: &str = "lumen-tv";
 /// An app without an `app_id` binds the first new window opened this soon
 /// after launch; a `process` app that never shows up in this long failed.
 pub const BIND_WINDOW_MS: u64 = 30_000;
-pub const DEFAULT_BROWSER: &str = "chromium --kiosk --ozone-platform=wayland --noerrdialogs {url}";
+/// `{id}` gives each web app its own Chromium profile (otherwise a second
+/// launch hands off to the running browser and exits) and its own Wayland
+/// app_id, `lumen-<id>`, so two web apps' windows can be told apart.
+pub const DEFAULT_BROWSER: &str = "chromium --kiosk --ozone-platform=wayland --noerrdialogs --class=lumen-{id} --user-data-dir=\"$HOME/.local/share/lumen-tv/browser/{id}\" {url}";
 
 // ---------------------------------------------------------------- (a) planner
 
@@ -361,11 +364,13 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn browser_line(browser_cmd: &str, url: &str) -> String {
-    if browser_cmd.contains("{url}") {
-        browser_cmd.replace("{url}", &shell_quote(url))
+// Registry ids are [A-Za-z0-9_-], so `{id}` needs no quoting.
+fn browser_line(browser_cmd: &str, id: &str, url: &str) -> String {
+    let cmd = browser_cmd.replace("{id}", id);
+    if cmd.contains("{url}") {
+        cmd.replace("{url}", &shell_quote(url))
     } else {
-        format!("{browser_cmd} {}", shell_quote(url))
+        format!("{cmd} {}", shell_quote(url))
     }
 }
 
@@ -386,7 +391,7 @@ pub fn command_line(entry: &Entry, browser_cmd: &str, on_path: &dyn Fn(&str) -> 
     match entry.kind {
         Kind::Url => {
             let url = entry.url.as_deref().ok_or("no url")?;
-            Ok(browser_line(browser_cmd, url))
+            Ok(browser_line(browser_cmd, &entry.id, url))
         }
         Kind::Command => {
             let launch = entry.launch.as_deref().ok_or("no launch line")?.trim();
@@ -395,7 +400,7 @@ pub fn command_line(entry: &Entry, browser_cmd: &str, on_path: &dyn Fn(&str) -> 
                 return Ok(launch.to_string());
             }
             match &entry.fallback_url {
-                Some(url) => Ok(browser_line(browser_cmd, url)),
+                Some(url) => Ok(browser_line(browser_cmd, &entry.id, url)),
                 None => Err(format!("{program}: not found on PATH")),
             }
         }
@@ -966,6 +971,7 @@ mod tests {
         let url = entry("id=\"a\"\nname=\"A\"\ntype=\"url\"\nurl=\"http://x/web\"\n");
         assert_eq!(command_line(&url, browser, &|_| false).unwrap(), "br --kiosk 'http://x/web'");
         assert_eq!(command_line(&url, "br", &|_| false).unwrap(), "br 'http://x/web'");
+        assert_eq!(command_line(&url, "br --class=lumen-{id} {url}", &|_| false).unwrap(), "br --class=lumen-a 'http://x/web'");
     }
 
     #[test]

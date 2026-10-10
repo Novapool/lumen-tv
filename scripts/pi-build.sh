@@ -4,5 +4,5 @@
 set -e
 cd "$(dirname "$0")/.."
 # /target is anchored so --delete still clears stale trees (e.g. the old src-tauri/).
-rsync -a --delete --exclude .git --exclude /target ./ pitv:lumen-tv/
+rsync -a --delete --exclude .git --exclude /target --exclude /.claude ./ pitv:lumen-tv/
 ssh pitv 'cd lumen-tv && ~/.cargo/bin/cargo build --release'
