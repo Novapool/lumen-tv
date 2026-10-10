@@ -48,10 +48,14 @@ Decisions so far:
 - (2026-10-06) Pi 5 has 8 GB RAM. laith is already in the `input` group. TV native mode is 3840x2160; Lumen sets 1080p60 by default with `wlr-randr` (`LUMEN_MODE` overrides it).
 
 - (2026-10-09) Clients run as children of Lumen in labwc (env XDG_RUNTIME_DIR=/run/user/1000, WAYLAND_DISPLAY=wayland-0, DISPLAY=:0 via Xwayland). All raise/close/fullscreen via foreign-toplevel:
-  - Jellyfin: `flatpak run org.jellyfin.JellyfinDesktop --fullscreen --tv`, app_id `org.jellyfin.JellyfinDesktop`, ~0.8 GB, closes in 0.4 s. Likely silent (no /dev/snd, no Pulse) and mpv logged VO errors: playback unverified.
-  - Plex: `chromium --kiosk --ozone-platform=wayland --noerrdialogs <url>`, app_id `chromium`, ~1.7 GB, F1 opens Chrome help (needs an rc.xml swallow).
+  - Jellyfin: web client in Chromium (`http://192.168.5.174:8096`, app_id `lumen-jellyfin`), TV layout set once via `localStorage.layout = "tv"` in its profile (`~/.local/share/lumen-tv/browser/jellyfin`). Jellyfin Desktop (Flathub) was dropped: no GPU in its Mesa (software rendering, very slow) and its player showed subtitles with no video/audio.
+  - Web apps get their own Chromium profile and app_id `lumen-<id>` (`{id}` in the browser command); otherwise a second launch hands off to the running Chromium and exits.
+  - Plex: Chromium kiosk, app_id `lumen-plex`, ~1.7 GB, F1 opens Chrome help (needs an rc.xml swallow).
   - Steam Link: `steamlink` (Xwayland), app_id `SteamLink`; launcher script exits at once, real app `~/.local/share/SteamLink/bin/shell` reparented to PID 1.
   - Kodi: `kodi --windowing=wayland`, app_id `Kodi`, real app `kodi.bin`, close takes 4.5 s.
+
+- (2026-10-09) Audio: PipeWire (`pipewire pipewire-pulse pipewire-alsa wireplumber`, user services) mixes for the HDMI output (vc4-hdmi-0, volume 100%). Without it Chromium's second audio stream got "Device or resource busy" and played silently (the Pi 5 HDMI PCM has no mixing). Kodi/Steam Link with pipewire-alsa still to be checked.
+- (2026-10-09) Startup race: if Lumen starts before HDMI-A-1 is ready, `start-lumen.sh` can't set the mode and Lumen's window comes up tiny, top-left, not fullscreen (labwc "invalid output set for view"). Fix in M3 Phase 2.
 
 ## Slint rules (from the spike)
 - Never animate a drop shadow's size or blur: the blur re-renders every frame (56.5 fps, 5.2% slow). Keep the shadow box fixed and fade it with `opacity`. Slint draws no shadow for an unfilled Rectangle, so fill it and hide it behind the face.
@@ -67,11 +71,7 @@ Decisions so far:
 - **M3 — Registry + launching + icons** (started 2026-10-08). Plan: `AGENT_JOBS.md` (transient).
   - Phase 0: done: `examples/toplevels.rs` + `examples/press.rs` (78822fd; foreign-toplevel v3, socket `wayland-0`, Lumen's window app_id "" / title "Lumen"). Client spike done (see Settled).
   - Phase 1: `platform::Windows` ∥ registry + lifecycle + process control ∥ icons (resolve + bake); input gating is a filter in main.rs (2.1), no `src/input/` changes.
-  - **Paused 2026-10-09 (Laith off the VPN, Pi unreachable).** Phase 1 builders stopped; work sits in git worktrees under `.claude/worktrees/`, all based on 359e3d8:
-    - 1.1 Windows: `worktree-agent-acc448ea3fe4f7a95`, rebased, **uncommitted** (staged `src/platform/mod.rs`, new `toplevel.rs`); Pi tests not confirmed.
-    - 1.2 registry/lifecycle: `worktree-agent-a7eeff02354602697` @ 66c4ac6; final Pi test run not confirmed.
-    - 1.3 icons: `worktree-agent-a44b5ed00e18a8aa8` @ 74e5c6c; final Pi test run not confirmed.
-    - To resume: re-run Pi tests per job, finish/commit 1.1, merge the three branches, then Phase 2. Remove `~/lumen-m3-j1{1,2,3}` on the Pi afterwards.
+  - Phase 1: done and merged (Windows 5b03651, registry/lifecycle 66c4ac6, icons 74e5c6c; 76 tests pass on the Pi). Jellyfin switched to its web client (3220d84).
   - Phase 2: wire into main + UI. Phase 3: review/simplify/tests/docs. Phase 4: gate G1–G6 on the Pi, then at the TV.
   - Every app runs as a child of Lumen inside labwc (no systemd units). While an app is in front, Lumen acts on Home alone (keyboard).
 
