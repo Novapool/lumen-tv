@@ -97,7 +97,11 @@ Decisions so far:
 - Bench is thermally sensitive: the Pi has no fan; after long builds it throttles at 75-82 C and 4K drops to 45-55 fps (a cool 4K run passed at 60). Let it cool before benching.
 
 ## Next Steps
-1. M3 Phase 4: gate G1–G6 on the Pi, then at the TV; bench G7 (cool Pi, idle next to motion).
+1. M3 Phase 4 (2026-10-10): automated gate G1–G7 **passed** on the Pi (Home 2–7 ms, reselect same PID 5/5, exclusive kill 1.2 s, kill→Lumen 3–41 ms, guard OK, quick reselect OK; bench 60 fps / 0.1% at 1080p and 4K, Pi 66–69 °C). Laith's TV check (Job 4.3 in AGENT_JOBS.md) in progress:
+   - **Bug: F1 reaches Chromium** (Jellyfin lands on the Google help page). Cause: in labwc `<action name="None"/>` clears a binding instead of swallowing the key. Fix `session/labwc/rc.xml`: bind F1 and Super_L to a no-op action (e.g. `<action name="Execute" command="true"/>`), restart lumen-test, verify Lumen still logs `[input] Home` and Chromium's title stays put. Recover a stuck page with Ctrl+W (closes the help tab).
+   - Audio after reboot: WirePlumber offered only "Dummy Output" (HDMI jack reads unplugged until a mode is set). Fixed with `../config/wireplumber-51-pitv-hdmi.conf` (see `../CLAUDE.md` Audio); confirm after the next reboot that Kodi and Lumen have sound. Check Screen Mirror (UxPlay writes to the HDMI ALSA device directly).
+   - Still to check at the TV: icons sharp; Jellyfin F1 → Lumen with running dot → reselect resumes; Steam Link stream smooth with sound, F1 ends it; Claude kills Jellyfin from SSH while Laith watches.
+   - Then Job 4.4: close M3 (MILESTONES result line, Recently Completed, delete AGENT_JOBS.md, remove `.claude/worktrees/`).
 2. Parked for M5 input polish (don't work on these before then): CEC Back/Home (`evtest /dev/input/event5` + `sudo cec-ctl -d /dev/cec0 -M`, try `--vendor-id 0x00e091`), remote Home fallback, PS5 controller over USB/BT.
 
 ## Recently Completed
