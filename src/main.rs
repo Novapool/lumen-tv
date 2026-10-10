@@ -8,6 +8,8 @@ mod bench;
 mod bake;
 #[allow(dead_code)]
 mod registry;
+#[allow(dead_code)]
+mod icons;
 // Input and platform code runs on the Pi (Linux) only; elsewhere, e.g. UI
 // work on the Mac, the window's own key events drive navigation.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -42,7 +44,7 @@ fn bake_tiles(ui: &AppWindow, rem: f32) {
     let apps = ui.get_apps();
     for i in 0..apps.row_count() {
         if let Some(app) = apps.row_data(i) {
-            apps.set_row_data(i, App { face: bake::tile_face(&app.bg, rem), ..app });
+            apps.set_row_data(i, App { face: bake::tile_face(&app.bg, rem, None), ..app });
         }
     }
     ui.set_tile_shadow(bake::tile_shadow(rem));
