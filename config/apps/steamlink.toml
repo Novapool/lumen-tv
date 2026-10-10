@@ -1,0 +1,13 @@
+# Steam Link runs under Xwayland. Its launcher script exits at once; the real
+# app is ~/.local/share/SteamLink/bin/shell, so `process` tells Lumen what to watch.
+id = "steamlink"
+name = "Steam Link"
+launch = "steamlink"
+background = "close-on-exit"
+exclusive = true
+app_id = "SteamLink"
+process = "~/.local/share/SteamLink/bin/shell"
+icon = "steamlink"
+glyph = "S"
+colors = ["#0b1a33", "#1b6fd1"]
+order = 30

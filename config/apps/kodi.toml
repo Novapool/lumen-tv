@@ -1,0 +1,11 @@
+# Kodi with its built-in Wayland windowing.
+id = "kodi"
+name = "Kodi"
+launch = "kodi --windowing=wayland"
+background = "close-on-exit"
+exclusive = true
+app_id = "Kodi"
+icon = "kodi"
+glyph = "K"
+colors = ["#0d3b5c", "#17b2e7"]
+order = 40
