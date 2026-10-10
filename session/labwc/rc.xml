@@ -10,13 +10,15 @@
       <action name="None"/>
     </keybind>
     <!-- F1 is Lumen's Home key (read straight from evdev, so Lumen still sees
-         it), but Chromium opens its help page on F1. Binding it to nothing
-         makes labwc swallow it so no client gets it. Same for Super_L. -->
+         it), but Chromium opens its help page on F1. A bound key is swallowed
+         by labwc so no client gets it. Same for Super_L. The action must be a
+         real one: "None" as the only action clears the binding instead
+         (labwc-actions(5)), and labwc has no dedicated no-op. -->
     <keybind key="F1">
-      <action name="None"/>
+      <action name="Execute" command="true"/>
     </keybind>
     <keybind key="Super_L">
-      <action name="None"/>
+      <action name="Execute" command="true"/>
     </keybind>
   </keyboard>
   <windowRules>
