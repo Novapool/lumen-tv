@@ -33,7 +33,7 @@ fn bake_heroes(ui: &AppWindow, home: &Home) {
     let t = std::time::Instant::now();
     let apps: Vec<App> =
         ui.get_apps().iter().enumerate().map(|(i, app)| App { hero: bake::hero(&home.tints[i]), ..app }).collect();
-    ui.set_apps(std::rc::Rc::new(VecModel::from(apps)).into());
+    ui.set_apps(Rc::new(VecModel::from(apps)).into());
     println!("[bake] heroes in {} ms", t.elapsed().as_millis());
 }
 

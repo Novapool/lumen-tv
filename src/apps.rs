@@ -569,8 +569,7 @@ pub fn matches_process(spec: &str, exe: Option<&str>, comm: &str) -> bool {
     if spec.contains('/') {
         exe.is_some_and(|e| e == spec)
     } else {
-        let want = if spec.len() > 15 { spec.get(..15).unwrap_or(spec) } else { spec };
-        comm == want
+        comm == spec.get(..15).unwrap_or(spec)
     }
 }
 
