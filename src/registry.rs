@@ -291,6 +291,34 @@ mod tests {
         assert!(l.errors[0].message.contains("duplicate"));
     }
 
+    #[test]
+    fn blank_required_fields_rejected() {
+        let ok = "id = \"a\"\nname = \"A\"\n";
+        assert!(parse("a.toml", "id = \"\"\nname = \"A\"\nlaunch = \"a\"\n").is_err(), "empty id");
+        assert!(parse("a.toml", "id = \"a\"\nname = \"  \"\nlaunch = \"a\"\n").unwrap_err().contains("name"));
+        assert!(parse("a.toml", &format!("{ok}launch = \"  \"\n")).unwrap_err().contains("launch"));
+        assert!(parse("a.toml", &format!("{ok}type = \"url\"\nurl = \"\"\n")).unwrap_err().contains("url"));
+        assert!(parse("a.toml", &format!("{ok}launch = \"a\"\nprocess = \" \"\n")).unwrap_err().contains("process"));
+        assert!(parse("a.toml", &format!("{ok}launch = \"a\"\nglyph = \"\"\n")).is_err(), "empty glyph");
+    }
+
+    #[test]
+    fn value_boundaries_accepted() {
+        let base = "id = \"a_b-1\"\nname = \"A\"\nlaunch = \"a\"\n";
+        assert!(parse("a.toml", &format!("{base}glyph = \"AB\"\n")).is_ok());
+        assert!(parse("a.toml", &format!("{base}colors = [\"#AABBCC\", \"#001122\", \"#ffffff\"]\n")).is_ok());
+        assert!(parse("a.toml", &format!("{base}colors = [\"#000000\", \"#111111\", \"#222222\", \"#333333\"]\n")).is_err());
+        assert!(parse("a.toml", &format!("{base}colors = [\"#00000g\", \"#111111\"]\n")).is_err());
+        assert!(parse("a.toml", &format!("{base}type = \"window\"\n")).is_err(), "unknown type");
+    }
+
+    #[test]
+    fn url_entry_may_omit_launch() {
+        let e = parse("a.toml", "id = \"a\"\nname = \"A\"\ntype = \"url\"\nurl = \"http://x\"\n").unwrap();
+        assert_eq!(e.kind, Kind::Url);
+        assert!(e.launch.is_none());
+    }
+
     fn temp(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("lumen-registry-{tag}-{}", std::process::id()))
     }

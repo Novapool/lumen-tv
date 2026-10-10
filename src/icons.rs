@@ -315,6 +315,57 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn relative_path_with_a_missing_file_errors_and_does_not_fall_back_to_the_theme() {
+        let d = tmp("relmiss");
+        let cfg = d.join("cfg");
+        put(&d.join("a/hicolor/256x256/apps/plex.png"), png(4, 4, [0, 0, 0, 255]));
+        let err = resolve("icons/plex.png", &cfg, &roots(&d)).unwrap_err();
+        assert!(err.contains("no such file") && err.contains("icons/plex.png"), "{err}");
+        assert!(resolve("plex.png", &cfg, &roots(&d)).is_err(), "an extension means a path, not a theme name");
+        assert!(resolve("PLEX.PNG", &cfg, &roots(&d)).is_err(), "extension check ignores case");
+        assert!(matches!(for_entry("plex", "icons/plex.png", &cfg, &roots(&d)), IconStatus::Missing(_)));
+        assert!(resolve("plex", &cfg, &roots(&d)).is_ok(), "the bare name still finds the theme icon");
+    }
+
+    #[test]
+    fn a_directory_is_not_an_icon_file() {
+        let d = tmp("dir");
+        fs::create_dir_all(d.join("cfg/icons/x.png")).unwrap();
+        assert!(resolve("icons/x.png", &d.join("cfg"), &roots(&d)).is_err());
+    }
+
+    #[test]
+    fn earlier_root_png_beats_later_root_svg() {
+        let d = tmp("rootsvg");
+        put(&d.join("a/hicolor/64x64/apps/foo.png"), png(4, 4, [0, 0, 0, 255]));
+        put(&d.join("b/hicolor/scalable/apps/foo.svg"), SVG);
+        assert!(resolve("foo", &d, &roots(&d)).unwrap().starts_with(d.join("a")));
+    }
+
+    #[test]
+    fn pixmaps_prefer_svg_and_hicolor_beats_pixmaps() {
+        let d = tmp("pix");
+        put(&d.join("pix/foo.png"), png(4, 4, [0, 0, 0, 255]));
+        put(&d.join("pix/foo.svg"), SVG);
+        assert!(resolve("foo", &d, &roots(&d)).unwrap().ends_with("pix/foo.svg"));
+        put(&d.join("b/hicolor/16x16/apps/foo.png"), png(4, 4, [0, 0, 0, 255]));
+        assert!(resolve("foo", &d, &roots(&d)).unwrap().starts_with(d.join("b")));
+    }
+
+    #[test]
+    fn for_entry_ready_and_corrupt_file_keeps_the_glyph() {
+        let d = tmp("forentry");
+        let cfg = d.join("cfg");
+        put(&cfg.join("icons/ok.png"), png(8, 4, [9, 9, 9, 255]));
+        put(&cfg.join("icons/bad.png"), b"not an image");
+        match for_entry("ok", "icons/ok.png", &cfg, &roots(&d)) {
+            IconStatus::Ready(Icon::Raster { w: 8, h: 4, .. }, p) => assert!(p.ends_with("icons/ok.png")),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(for_entry("bad", "icons/bad.png", &cfg, &roots(&d)), IconStatus::Missing(_)));
+    }
+
+    #[test]
     fn load_png_and_svg() {
         let d = tmp("load");
         put(&d.join("a.png"), png(8, 4, [255, 0, 0, 255]));

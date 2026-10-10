@@ -959,6 +959,76 @@ mod tests {
         );
     }
 
+
+    // --- Job 3.3 gap tests ---
+    #[test]
+    fn exclusive_with_nothing_running_only_spawns() {
+        let mut lc = Lifecycle::new(vec![excl("s")]);
+        assert_eq!(lc.select("s", 0), vec![Step::Spawn("s".into())]);
+    }
+
+    #[test]
+    fn exclusive_with_one_app_in_front_terminates_it_and_drops_to_lumen() {
+        let mut lc = Lifecycle::new(vec![keep("j"), excl("s")]);
+        up(&mut lc, "j");
+        assert_eq!(lc.foreground(), &Foreground::App("j".into()));
+        assert_eq!(lc.select("s", 30), vec![term("j", Some(100), &[50], None), Step::Spawn("s".into())]);
+        assert_eq!(lc.foreground(), &Foreground::Lumen);
+    }
+
+    #[test]
+    fn home_while_launching_with_no_window_does_nothing() {
+        let mut lc = Lifecycle::new(vec![excl("k")]);
+        lc.select("k", 0);
+        assert_eq!(lc.home(), vec![]);
+        assert!(lc.is_running("k"), "still launching");
+        assert!(lc.snapshot().apps[0].launching);
+    }
+
+    #[test]
+    fn window_from_an_app_that_was_not_launched_is_ignored() {
+        let mut lc = Lifecycle::new(vec![spec("a"), keep("j")]);
+        assert_eq!(lc.window_opened(&win(7, "a"), 5), vec![], "nothing running");
+        assert_eq!(lc.foreground(), &Foreground::Lumen, "an activated stranger does not take the foreground");
+        up(&mut lc, "j");
+        assert_eq!(lc.window_opened(&win(8, "a"), 20), vec![], "a is known but not running");
+        assert_eq!(lc.snapshot().apps.len(), 1);
+        assert_eq!(lc.foreground(), &Foreground::App("j".into()));
+    }
+
+    #[test]
+    fn anonymous_app_does_not_steal_a_window_that_belongs_to_another_entry() {
+        let anon = Spec { app_id: None, ..spec("x") };
+        let mut lc = Lifecycle::new(vec![anon, spec("a")]);
+        lc.select("x", 0);
+        assert_eq!(lc.window_opened(&win(7, "a"), 5), vec![]);
+        assert!(lc.snapshot().apps[0].launching);
+    }
+
+    #[test]
+    fn reselect_after_a_crash_spawns_fresh() {
+        let mut lc = Lifecycle::new(vec![keep("j")]);
+        up(&mut lc, "j");
+        assert_eq!(lc.process_exited("j", 100, 139), vec![Step::ActivateLumen]);
+        assert_eq!(lc.select("j", 500), vec![Step::Spawn("j".into())]);
+        assert_eq!(
+            lc.snapshot().apps,
+            vec![AppSnapshot { id: "j".into(), pid: None, windows: vec![], launching: true }],
+            "no stale pid or window carried over"
+        );
+        // the old window id (50) closing late must not end the new run
+        assert_eq!(lc.window_closed(50), vec![]);
+        assert!(lc.is_running("j"));
+    }
+
+    #[test]
+    fn exit_after_the_window_closed_is_a_no_op() {
+        let mut lc = Lifecycle::new(vec![keep("j")]);
+        up(&mut lc, "j");
+        lc.window_closed(50);
+        assert_eq!(lc.process_exited("j", 100, 0), vec![]);
+    }
+
     // process control
     fn entry(toml: &str) -> Entry {
         crate::registry::parse("t.toml", toml).unwrap()
