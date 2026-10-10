@@ -8,8 +8,9 @@ Lumen: an Apple TV-style launcher for pitv (Rust + Slint UI, evdev input, labwc 
 - `IN-PROGRESS.md`: current state, Slint rules, open questions, next steps. Read before any work.
 
 ## Layout
-- `src/`: Rust (main + Slint callbacks, input, registry, apps, store, `platform/`). `ui/`: `.slint` files, compiled by `build.rs`.
-- `config/input/`: shipped input mapping files (built into the binary). `examples/fake-pad.rs`: virtual controller for testing input on the Pi.
+- `src/`: Rust (main + Slint callbacks, input, registry, apps, icons, bake, `session.rs` = glue between registry, lifecycle, windows and the Home gate, `platform/`). `ui/`: `.slint` files, compiled by `build.rs`.
+- `config/input/`: shipped input mapping files (built into the binary). `config/apps/`: default app registry TOMLs (built in; seeded to `~/.config/lumen-tv/apps/`).
+- `examples/`: `fake-pad.rs` (virtual controller), `press.rs` (taps keys via uinput) and `toplevels.rs` (lists labwc toplevels): the M3 gate instruments.
 - `session/`: labwc config, `start-lumen.sh`, `lumen-test.service`, sudoers. `scripts/pi-build.sh`: sync to pitv and build there.
 
 ## Rules
