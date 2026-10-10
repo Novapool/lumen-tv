@@ -37,7 +37,7 @@ export component AppWindow inherits Window {
     property <int> visible-tiles: 5;
 
     // The apps row: registry entries, then Store and Settings. Built in
-    // main.rs, which also bakes each `hero` from `bg` at startup.
+    // main.rs, which also bakes each `hero` at startup.
     in-out property <[App]> apps: [];
 
     // Two backdrop layers: the hidden one gets the new image, then they swap opacity.

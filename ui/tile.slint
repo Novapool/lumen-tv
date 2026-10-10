@@ -11,7 +11,6 @@ export struct App {
     running: bool, // the app is running or launching: draws the dot
     name: string,
     glyph: string,
-    bg: brush, // source of the baked hero and face images
     hero: image, // baked backdrop (src/bake.rs), filled in at startup
     face: image, // baked tile face, re-baked when the window size changes
 }

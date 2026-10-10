@@ -16,7 +16,7 @@
 // - Tile shadow: one image shared by every tile, baked at 1/4 resolution.
 
 use crate::icons::{self, Icon};
-use slint::{Brush, Color, Image, Rgb8Pixel, Rgba8Pixel, SharedPixelBuffer};
+use slint::{Image, Rgb8Pixel, Rgba8Pixel, SharedPixelBuffer};
 
 const HERO_W: u32 = 640;
 const HERO_H: u32 = 234; // 65% of 360
@@ -32,8 +32,8 @@ const SHADOW_BLUR: f32 = 3.2 * TILE_FOCUS + 1.2; // +1.2rem makes up for the res
 const SHADOW_ALPHA: f32 = 0.65;
 const SHADOW_SCALE: f32 = 0.25;
 
-/// The hero backdrop for an app's tile brush.
-pub fn hero(bg: &Brush) -> Image {
+/// The hero backdrop for an app's tile gradient.
+pub fn hero(bg: &Tint) -> Image {
     let (w, h) = (HERO_W as f32, HERO_H as f32);
     let ramp = Ramp::new(bg, w, h);
 
@@ -89,7 +89,7 @@ pub fn icon_box(w: f32, h: f32, natural: (f32, f32)) -> (u32, u32, u32, u32) {
 /// A tile face at its focused size for `rem` physical pixels: the app brush,
 /// the icon (if any, over the gradient and under the gloss), the top gloss and
 /// antialiased rounded corners (premultiplied alpha).
-pub fn tile_face(bg: &Brush, rem: f32, icon: Option<&Icon>) -> Image {
+pub fn tile_face(bg: &Tint, rem: f32, icon: Option<&Icon>) -> Image {
     let (w, h) = ((TILE_W * TILE_FOCUS * rem).ceil(), (TILE_H * TILE_FOCUS * rem).ceil());
     let radius = TILE_RADIUS * TILE_FOCUS * rem;
     let ramp = Ramp::new(bg, w, h);
@@ -226,18 +226,29 @@ struct Ramp {
     stops: Vec<(f32, [f32; 3])>,
 }
 
+/// A tile's colour gradient: an angle and colour stops (positions 0..1).
+/// Kept in Rust beside the icon; Slint never draws it, only the bakes do.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tint {
+    angle: f32,
+    stops: Vec<(f32, [f32; 3])>,
+}
+
+impl Tint {
+    /// `colors` (rgb 0..255) spread evenly along a gradient at `angle` degrees.
+    pub fn from_stops(angle: f32, colors: &[[u8; 3]]) -> Tint {
+        let last = (colors.len().max(2) - 1) as f32;
+        let stops = colors.iter().enumerate().map(|(i, c)| (i as f32 / last, c.map(f32::from))).collect();
+        Tint { angle, stops }
+    }
+}
+
 impl Ramp {
-    fn new(brush: &Brush, w: f32, h: f32) -> Ramp {
-        let (angle, stops) = match brush {
-            Brush::LinearGradient(g) => {
-                (g.angle(), g.stops().map(|s| (s.position, rgb(s.color))).collect())
-            }
-            other => (0., vec![(0., rgb(other.color()))]),
-        };
-        let (start, end) = line_for_angle(angle, w, h);
+    fn new(tint: &Tint, w: f32, h: f32) -> Ramp {
+        let (start, end) = line_for_angle(tint.angle, w, h);
         let (dx, dy) = (end.0 - start.0, end.1 - start.1);
         let len2 = (dx * dx + dy * dy).max(f32::EPSILON);
-        Ramp { start, dir: (dx / len2, dy / len2), stops }
+        Ramp { start, dir: (dx / len2, dy / len2), stops: tint.stops.clone() }
     }
 
     fn at(&self, x: f32, y: f32) -> [f32; 3] {
@@ -253,10 +264,6 @@ impl Ramp {
         let f = (t - p0) / (p1 - p0).max(f32::EPSILON);
         [0, 1, 2].map(|k| c0[k] + (c1[k] - c0[k]) * f)
     }
-}
-
-fn rgb(c: Color) -> [f32; 3] {
-    [c.red() as f32, c.green() as f32, c.blue() as f32]
 }
 
 /// i_slint_core::graphics::line_for_angle (not public API), ported as-is.
@@ -283,7 +290,7 @@ mod tests {
     use crate::icons::tests::{png, tmp, SVG};
 
     fn face_px(icon: Option<&Icon>) -> (u32, u32, Vec<u8>) {
-        let img = tile_face(&Brush::from(Color::from_rgb_u8(40, 90, 160)), 8., icon);
+        let img = tile_face(&Tint::from_stops(135., &[[40, 90, 160], [90, 40, 160]]), 8., icon);
         let b = img.to_rgba8_premultiplied().unwrap();
         (b.width(), b.height(), b.as_bytes().to_vec())
     }
@@ -335,7 +342,7 @@ mod tests {
         std::fs::write(d.join("a.png"), png(256, 256, [255, 255, 255, 255])).unwrap();
         std::fs::write(d.join("a.svg"), SVG).unwrap();
         let (p, s) = (icons::load(&d.join("a.png")).unwrap(), icons::load(&d.join("a.svg")).unwrap());
-        let brush = Brush::from(Color::from_rgb_u8(40, 90, 160));
+        let brush = Tint::from_stops(135., &[[40, 90, 160], [90, 40, 160]]);
         let time = |label: &str, icon: Option<&Icon>| {
             let _ = tile_face(&brush, 32., icon);
             let t = std::time::Instant::now();

@@ -20,8 +20,7 @@ mod session;
 use std::rc::Rc;
 use std::time::Duration;
 
-use slint::{Brush, Color, ComponentHandle, Model, Timer, TimerMode, VecModel};
-use slint::private_unstable_api::re_exports::{GradientStop, LinearGradientBrush};
+use slint::{ComponentHandle, Model, Timer, TimerMode, VecModel};
 
 slint::include_modules!();
 
@@ -29,36 +28,38 @@ fn time_now() -> String {
     chrono::Local::now().format("%-I:%M %p").to_string()
 }
 
-/// Bakes every app's hero backdrop from its tile brush (see bake.rs).
-fn bake_heroes(ui: &AppWindow) {
+/// Bakes every app's hero backdrop from its tile gradient (see bake.rs).
+fn bake_heroes(ui: &AppWindow, home: &Home) {
     let t = std::time::Instant::now();
-    let apps: Vec<App> = ui.get_apps().iter().map(|app| App { hero: bake::hero(&app.bg), ..app }).collect();
+    let apps: Vec<App> =
+        ui.get_apps().iter().enumerate().map(|(i, app)| App { hero: bake::hero(&home.tints[i]), ..app }).collect();
     ui.set_apps(std::rc::Rc::new(VecModel::from(apps)).into());
     println!("[bake] heroes in {} ms", t.elapsed().as_millis());
 }
 
-/// What the home screen keeps beyond the Slint model: the registry's load
-/// errors and each tile's icon outcome (row i of the model, `None` for the
-/// built-in tiles). Nothing displays them until M3.5's Settings.
-#[allow(dead_code)]
+/// What the home screen keeps beyond the Slint model, by row i of the model:
+/// each tile's gradient (bake input) and icon outcome (`None` for the built-in
+/// tiles), plus the registry's load errors. Nothing displays the last two
+/// until M3.5's Settings.
 struct Home {
+    tints: Vec<bake::Tint>,
+    #[allow(dead_code)] // M3.5 Settings
     errors: Vec<registry::LoadError>,
+    #[allow(dead_code)] // M3.5 Settings
     icons: Vec<Option<icons::IconStatus>>,
 }
 
-/// `#rrggbb` (validated by the registry) to a color.
-fn hex_color(s: &str) -> Color {
+/// `#rrggbb` (validated by the registry) to rgb.
+fn hex_rgb(s: &str) -> [u8; 3] {
     let v = u32::from_str_radix(s.trim_start_matches('#'), 16).unwrap_or(0);
-    Color::from_rgb_u8((v >> 16) as u8, (v >> 8) as u8, v as u8)
+    [(v >> 16) as u8, (v >> 8) as u8, v as u8]
 }
 
 /// The 135 degree tile gradient: the stops spread evenly.
-fn tile_brush(colors: Option<&[String]>) -> Brush {
+fn tile_tint(colors: Option<&[String]>) -> bake::Tint {
     let default = ["#24262c".to_string(), "#6b707c".to_string()];
-    let colors = colors.unwrap_or(&default);
-    let last = (colors.len().max(2) - 1) as f32;
-    let stops = colors.iter().enumerate().map(|(i, c)| GradientStop { color: hex_color(c), position: i as f32 / last });
-    Brush::LinearGradient(LinearGradientBrush::new(135., stops))
+    let rgb: Vec<[u8; 3]> = colors.unwrap_or(&default).iter().map(|c| hex_rgb(c)).collect();
+    bake::Tint::from_stops(135., &rgb)
 }
 
 /// Loads the registry (seeding the defaults on first start), decodes the
@@ -73,6 +74,7 @@ fn build_apps() -> (Vec<registry::Entry>, Vec<App>, Home) {
     let loaded = registry::load(&dir);
     let (config, roots) = (registry::config_dir(), icons::Roots::system());
     let mut apps = Vec::new();
+    let mut tints = Vec::new();
     let mut statuses = Vec::new();
     for e in &loaded.entries {
         let status = e.icon.as_deref().map(|spec| icons::for_entry(&e.id, spec, &config, &roots));
@@ -83,10 +85,10 @@ fn build_apps() -> (Vec<registry::Entry>, Vec<App>, Home) {
             running: false,
             name: e.name.clone().into(),
             glyph: if ready { "".into() } else { glyph.into() },
-            bg: tile_brush(e.colors.as_deref()),
             hero: Default::default(),
             face: Default::default(),
         });
+        tints.push(tile_tint(e.colors.as_deref()));
         statuses.push(status);
     }
     for (name, glyph, c0, c1) in [("Store", "+", "#003b3b", "#19c3b0"), ("Settings", "⚙", "#24262c", "#6b707c")] {
@@ -95,13 +97,13 @@ fn build_apps() -> (Vec<registry::Entry>, Vec<App>, Home) {
             running: false,
             name: name.into(),
             glyph: glyph.into(),
-            bg: tile_brush(Some(&[c0.to_string(), c1.to_string()])),
             hero: Default::default(),
             face: Default::default(),
         });
+        tints.push(tile_tint(Some(&[c0.to_string(), c1.to_string()])));
         statuses.push(None);
     }
-    (loaded.entries, apps, Home { errors: loaded.errors, icons: statuses })
+    (loaded.entries, apps, Home { tints, errors: loaded.errors, icons: statuses })
 }
 
 /// Bakes the tile faces and the shared shadow for `rem` physical pixels per rem.
@@ -117,7 +119,7 @@ fn bake_tiles(ui: &AppWindow, rem: f32, home: &Home) {
                 Some(Some(icons::IconStatus::Ready(icon, _))) => Some(icon),
                 _ => None,
             };
-            apps.set_row_data(i, App { face: bake::tile_face(&app.bg, rem, icon), ..app });
+            apps.set_row_data(i, App { face: bake::tile_face(&home.tints[i], rem, icon), ..app });
         }
     }
     ui.set_tile_shadow(bake::tile_shadow(rem));
@@ -135,7 +137,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let (entries, model, home) = build_apps();
     ui.set_apps(Rc::new(VecModel::from(model)).into());
     let home = Rc::new(home);
-    bake_heroes(&ui);
+    bake_heroes(&ui, &home);
     ui.on_blend(bake::blend);
     let weak = ui.as_weak();
     ui.on_rebake_tiles(move |rem| {

@@ -21,8 +21,8 @@ use crate::AppWindow;
 
 /// How long a closing app gets to quit on its own before SIGTERM.
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
-/// Give up asking the compositor to fullscreen Lumen's window after this many tries.
-const MAX_FULLSCREEN_REQUESTS: u32 = 5;
+/// Keep asking the compositor to fullscreen Lumen's window, once a second, for this long.
+const FULLSCREEN_RETRY_FOR: Duration = Duration::from_secs(10);
 
 struct Ctx {
     lc: Lifecycle,
@@ -37,7 +37,8 @@ struct Ctx {
     ui: Weak<AppWindow>,
     /// Last logged (app_id, activated, fullscreen) per window, to log changes only.
     seen: HashMap<u64, (String, bool, bool)>,
-    fullscreen_requests: u32,
+    /// Retries the fullscreen request while Lumen's window isn't fullscreen.
+    fullscreen_timer: slint::Timer,
 }
 
 thread_local! {
@@ -65,7 +66,7 @@ pub fn start(ui: &AppWindow, entries: Vec<Entry>) -> Arc<AtomicBool> {
             targets: targets.clone(),
             ui: ui.as_weak(),
             seen: HashMap::new(),
-            fullscreen_requests: 0,
+            fullscreen_timer: slint::Timer::default(),
         })
     });
 
@@ -82,11 +83,11 @@ pub fn start(ui: &AppWindow, entries: Vec<Entry>) -> Arc<AtomicBool> {
 
     apps::start_poller(
         move || targets.lock().map(|t| t.clone()).unwrap_or_default(),
-        |id, found| {
+        |id, pids| {
             let _ = slint::invoke_from_event_loop(move || {
                 let steps = with_ctx(|c| {
                     let now = c.t0.elapsed().as_millis() as u64;
-                    c.lc.process_poll(&id, found, now)
+                    c.lc.process_poll(&id, &pids, now)
                 });
                 run(steps.unwrap_or_default());
             });
@@ -112,7 +113,7 @@ pub fn start(ui: &AppWindow, entries: Vec<Entry>) -> Arc<AtomicBool> {
 
 /// Home pressed (F1 / Super / HomePage / long Back).
 pub fn home() {
-    let steps = with_ctx(|c| c.lc.home()).unwrap_or_default();
+    let steps = with_ctx(|c| c.lc.home(c.lumen_front.load(Ordering::Relaxed))).unwrap_or_default();
     if !steps.is_empty() {
         println!("[apps] home -> {}", describe(&steps));
     }
@@ -172,6 +173,7 @@ fn run(steps: Vec<Step>) {
                 println!("[apps] terminate {} pid={:?} windows={:?}", t.id, t.pid, t.windows);
                 // Collect before the windows close: the process tree is intact now.
                 let pids = apps::collect_targets(t.pid, t.process.as_deref());
+                with_ctx(|c| c.lc.retire_pids(&t.id, &pids));
                 if let Some(win) = windows() {
                     for w in &t.windows {
                         log_err("close", win.close(*w));
@@ -234,6 +236,19 @@ fn info(t: &Toplevel) -> WindowInfo {
     WindowInfo { id: t.id, app_id: t.app_id.clone(), activated: t.activated, fullscreen: t.fullscreen }
 }
 
+/// Timer tick: ask again until Lumen's window is fullscreen or the time is up.
+fn fullscreen_retry(started: Instant) {
+    let lumen = windows().and_then(|w| w.toplevels().into_iter().find(|t| t.app_id == LUMEN_APP_ID));
+    let done = lumen.as_ref().is_none_or(|t| t.fullscreen) || started.elapsed() >= FULLSCREEN_RETRY_FOR;
+    if done {
+        with_ctx(|c| c.fullscreen_timer.stop());
+    }
+    if let (false, Some(t), Some(win)) = (done, lumen, windows()) {
+        println!("[windows] Lumen's window is still not fullscreen, requesting it again");
+        log_err("fullscreen lumen", win.set_fullscreen(t.id));
+    }
+}
+
 fn window_event(ev: WindowEvent) {
     let opened = matches!(ev, WindowEvent::Opened(_));
     let steps = match ev {
@@ -248,10 +263,13 @@ fn window_event(ev: WindowEvent) {
                 if t.app_id == LUMEN_APP_ID {
                     c.lumen_front.store(t.activated, Ordering::Relaxed);
                     if t.fullscreen {
-                        c.fullscreen_requests = 0;
-                    } else if c.fullscreen_requests < MAX_FULLSCREEN_REQUESTS {
-                        c.fullscreen_requests += 1;
+                        c.fullscreen_timer.stop();
+                    } else if !c.fullscreen_timer.running() {
                         fullscreen_lumen = Some(t.id);
+                        let started = Instant::now();
+                        c.fullscreen_timer.start(slint::TimerMode::Repeated, Duration::from_secs(1), move || {
+                            fullscreen_retry(started)
+                        });
                     }
                 }
                 let now_ms = c.t0.elapsed().as_millis() as u64;

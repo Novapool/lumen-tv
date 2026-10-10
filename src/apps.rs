@@ -119,15 +119,29 @@ struct AppState {
     seen: bool,
 }
 
+/// What a Terminate left behind: windows and processes that are still dying
+/// and must not be mistaken for a new run of the same app. The simplest safe
+/// answer to a quick re-select (rather than deferring the Spawn until the
+/// kill completes, which needs a completion callback and makes the tile feel
+/// dead for up to 5 s) is to let the new run start at once and ignore these:
+/// toplevel ids are monotonic, so a retired window id can never be a new
+/// window, and a retired PID is never the new run's process.
+#[derive(Default)]
+struct Retiring {
+    windows: Vec<u64>,
+    pids: Vec<u32>,
+}
+
 pub struct Lifecycle {
     specs: Vec<Spec>,
     running: BTreeMap<String, AppState>,
+    retiring: BTreeMap<String, Retiring>,
     fg: Foreground,
 }
 
 impl Lifecycle {
     pub fn new(specs: Vec<Spec>) -> Lifecycle {
-        Lifecycle { specs, running: BTreeMap::new(), fg: Foreground::Lumen }
+        Lifecycle { specs, running: BTreeMap::new(), retiring: BTreeMap::new(), fg: Foreground::Lumen }
     }
 
     fn spec(&self, id: &str) -> Option<&Spec> {
@@ -175,7 +189,17 @@ impl Lifecycle {
         }
     }
 
-    fn termination(&self, id: &str, st: AppState) -> Termination {
+    /// Main reports the PIDs `collect_targets` returned for a Terminate, so the
+    /// poll can tell the dying run's process from a new run's.
+    pub fn retire_pids(&mut self, id: &str, pids: &[u32]) {
+        // Only `process` apps are polled, so only they have PIDs to ignore.
+        if self.spec(id).is_some_and(|s| s.process.is_some()) {
+            self.retiring.entry(id.to_string()).or_default().pids.extend_from_slice(pids);
+        }
+    }
+
+    fn termination(&mut self, id: &str, st: AppState) -> Termination {
+        self.retiring.entry(id.to_string()).or_default().windows.extend_from_slice(&st.windows);
         Termination {
             id: id.to_string(),
             pid: st.pid,
@@ -224,8 +248,28 @@ impl Lifecycle {
         steps
     }
 
-    pub fn home(&mut self) -> Vec<Step> {
-        let Foreground::App(id) = self.fg.clone() else { return vec![] };
+    /// Home pressed. `lumen_activated`: Lumen's own window is the active one.
+    /// If it is not, something else has the screen that the planner doesn't
+    /// know about (an unbound window, a launch still unbound), so Home always
+    /// brings Lumen back and ends close-on-exit apps that are still launching.
+    pub fn home(&mut self, lumen_activated: bool) -> Vec<Step> {
+        let Foreground::App(id) = self.fg.clone() else {
+            if lumen_activated {
+                return vec![];
+            }
+            let mut steps = vec![Step::ActivateLumen];
+            let launching: Vec<String> = self
+                .running
+                .iter()
+                .filter(|(id, st)| st.windows.is_empty() && !self.spec(id).is_some_and(|s| s.keep_alive))
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in launching {
+                let st = self.running.remove(&id).unwrap();
+                steps.push(Step::Terminate(self.termination(&id, st)));
+            }
+            return steps;
+        };
         self.fg = Foreground::Lumen;
         let keep_alive = self.spec(&id).is_some_and(|s| s.keep_alive);
         let mut steps = vec![Step::ActivateLumen];
@@ -278,6 +322,9 @@ impl Lifecycle {
             }
             return vec![];
         }
+        if self.retiring.values().any(|r| r.windows.contains(&w.id)) {
+            return vec![]; // a window of a run that is being terminated
+        }
         if let Some(id) = self.running.iter().find(|(_, st)| st.windows.contains(&w.id)).map(|(id, _)| id.clone()) {
             if w.activated {
                 self.fg = Foreground::App(id);
@@ -301,6 +348,10 @@ impl Lifecycle {
 
     /// The last bound window of an app closing ends the app (every app).
     pub fn window_closed(&mut self, window: u64) -> Vec<Step> {
+        self.retiring.retain(|_, r| {
+            r.windows.retain(|&w| w != window);
+            !(r.windows.is_empty() && r.pids.is_empty())
+        });
         let Some(id) = self.running.iter().find(|(_, st)| st.windows.contains(&window)).map(|(id, _)| id.clone()) else {
             return vec![];
         };
@@ -344,10 +395,22 @@ impl Lifecycle {
         self.finish(id)
     }
 
-    /// One poll result for a `process` app: was its process found?
-    pub fn process_poll(&mut self, id: &str, found: bool, now_ms: u64) -> Vec<Step> {
+    /// One poll result for a `process` app: the PIDs that match its process.
+    /// PIDs of a run being terminated don't count; once none of them is left
+    /// they are forgotten.
+    pub fn process_poll(&mut self, id: &str, pids: &[u32], now_ms: u64) -> Vec<Step> {
         if !self.spec(id).is_some_and(|s| s.process.is_some()) {
             return vec![];
+        }
+        let mut found = !pids.is_empty();
+        if let Some(r) = self.retiring.get_mut(id) {
+            found = pids.iter().any(|p| !r.pids.contains(p));
+            if !pids.iter().any(|p| r.pids.contains(p)) {
+                r.pids.clear(); // the old run is gone
+            }
+            if r.windows.is_empty() && r.pids.is_empty() {
+                self.retiring.remove(id);
+            }
         }
         let Some(st) = self.running.get_mut(id) else { return vec![] };
         if found {
@@ -549,43 +612,40 @@ pub fn collect_targets(launcher: Option<u32>, process: Option<&str>) -> Vec<u32>
     out
 }
 
-extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-}
-const SIGKILL: i32 = 9;
-const SIGTERM: i32 = 15;
-
+#[cfg(target_os = "linux")]
 fn alive(pid: u32) -> bool {
-    pid > 1 && unsafe { kill(pid as i32, 0) } == 0
+    pid > 1 && unsafe { libc::kill(pid as i32, 0) } == 0
 }
 
+#[cfg(target_os = "linux")]
 fn signal(pid: u32, sig: i32) {
     if pid > 1 {
-        unsafe { kill(pid as i32, sig) };
+        unsafe { libc::kill(pid as i32, sig) };
     }
 }
 
 /// On its own thread: wait `pre_delay` (main closes the app's windows during
 /// it), SIGTERM whatever is still alive, and SIGKILL the survivors 3 s later.
+#[cfg(target_os = "linux")]
 pub fn terminate(pids: Vec<u32>, pre_delay: Duration) {
     std::thread::spawn(move || {
         std::thread::sleep(pre_delay);
         for &p in pids.iter().filter(|&&p| alive(p)) {
-            signal(p, SIGTERM);
+            signal(p, libc::SIGTERM);
         }
         std::thread::sleep(Duration::from_secs(3));
         for &p in pids.iter().filter(|&&p| alive(p)) {
-            signal(p, SIGKILL);
+            signal(p, libc::SIGKILL);
         }
     });
 }
 
 /// Polls about once a second for the `process` of each target (`Lifecycle::
-/// poll_targets`), reporting `(id, found)`. Does nothing while there are no
+/// poll_targets`), reporting `(id, pids)`: every PID that matches. Does nothing while there are no
 /// targets, so it costs nothing unless such an app is running.
 pub fn start_poller(
     targets: impl Fn() -> Vec<(String, String)> + Send + 'static,
-    report: impl Fn(String, bool) + Send + 'static,
+    report: impl Fn(String, Vec<u32>) + Send + 'static,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(1));
@@ -595,7 +655,8 @@ pub fn start_poller(
         }
         let table = read_table();
         for (id, process) in wanted {
-            report(id, !find_pids(&process, &table).is_empty());
+            let pids = find_pids(&process, &table);
+            report(id, pids);
         }
     })
 }
@@ -684,17 +745,17 @@ mod tests {
     #[test]
     fn home_with_lumen_in_front_does_nothing() {
         let mut lc = Lifecycle::new(vec![keep("j")]);
-        assert_eq!(lc.home(), vec![]);
+        assert_eq!(lc.home(true), vec![]);
         up(&mut lc, "j");
         lc.window_changed(&lumen_win(true), 30);
-        assert_eq!(lc.home(), vec![]);
+        assert_eq!(lc.home(true), vec![]);
     }
 
     #[test]
     fn home_keep_alive_returns_and_keeps_running() {
         let mut lc = Lifecycle::new(vec![keep("j")]);
         up(&mut lc, "j");
-        assert_eq!(lc.home(), vec![Step::ActivateLumen]);
+        assert_eq!(lc.home(true), vec![Step::ActivateLumen]);
         assert!(lc.is_running("j"));
         assert_eq!(lc.foreground(), &Foreground::Lumen);
     }
@@ -703,7 +764,7 @@ mod tests {
     fn home_close_on_exit_returns_first_then_terminates() {
         let mut lc = Lifecycle::new(vec![excl("k")]);
         up(&mut lc, "k");
-        assert_eq!(lc.home(), vec![Step::ActivateLumen, term("k", Some(100), &[50], None)]);
+        assert_eq!(lc.home(true), vec![Step::ActivateLumen, term("k", Some(100), &[50], None)]);
         assert!(!lc.is_running("k"));
     }
 
@@ -800,7 +861,7 @@ mod tests {
     fn stale_exit_from_an_earlier_run_is_ignored() {
         let mut lc = Lifecycle::new(vec![excl("k")]);
         up(&mut lc, "k");
-        lc.home();
+        lc.home(true);
         lc.select("k", 100);
         lc.set_pid("k", 300);
         assert_eq!(lc.process_exited("k", 100, 0), vec![]);
@@ -857,7 +918,7 @@ mod tests {
         assert!(lc.is_running("s"));
         lc.window_opened(&win(50, "s"), 3_000);
         assert_eq!(lc.foreground(), &Foreground::App("s".into()));
-        assert_eq!(lc.process_poll("s", true, 4_000), vec![]);
+        assert_eq!(lc.process_poll("s", &[7], 4_000), vec![]);
         assert!(lc.is_running("s"));
     }
 
@@ -868,8 +929,8 @@ mod tests {
         lc.set_pid("s", 100);
         lc.process_exited("s", 100, 0);
         lc.window_opened(&win(50, "s"), 3_000);
-        lc.process_poll("s", true, 4_000);
-        assert_eq!(lc.process_poll("s", false, 5_000), vec![Step::ActivateLumen]);
+        lc.process_poll("s", &[7], 4_000);
+        assert_eq!(lc.process_poll("s", &[], 5_000), vec![Step::ActivateLumen]);
         assert!(!lc.is_running("s"));
     }
 
@@ -879,7 +940,7 @@ mod tests {
         lc.select("s", 0);
         lc.set_pid("s", 100);
         lc.process_exited("s", 100, 0);
-        assert_eq!(lc.process_poll("s", false, 5_000), vec![]);
+        assert_eq!(lc.process_poll("s", &[], 5_000), vec![]);
         assert!(lc.is_running("s"));
     }
 
@@ -888,9 +949,9 @@ mod tests {
         let mut lc = Lifecycle::new(vec![proc_app("s")]);
         lc.select("s", 1_000);
         lc.process_exited("s", 0, 0);
-        assert_eq!(lc.process_poll("s", false, 31_000), vec![]);
+        assert_eq!(lc.process_poll("s", &[], 31_000), vec![]);
         assert!(lc.is_running("s"));
-        assert_eq!(lc.process_poll("s", false, 31_001), vec![]);
+        assert_eq!(lc.process_poll("s", &[], 31_001), vec![]);
         assert!(!lc.is_running("s"));
     }
 
@@ -918,7 +979,7 @@ mod tests {
     fn process_app_terminate_carries_the_process_spec() {
         let mut lc = Lifecycle::new(vec![proc_app("s")]);
         up(&mut lc, "s");
-        assert_eq!(lc.home(), vec![Step::ActivateLumen, term("s", Some(100), &[50], Some("~/real/shell"))]);
+        assert_eq!(lc.home(true), vec![Step::ActivateLumen, term("s", Some(100), &[50], Some("~/real/shell"))]);
     }
 
     #[test]
@@ -929,7 +990,7 @@ mod tests {
         assert!(lc.poll_targets().is_empty());
         lc.select("s", 1);
         assert_eq!(lc.poll_targets(), vec![("s".to_string(), "~/real/shell".to_string())]);
-        lc.process_poll("s", false, 99_999);
+        lc.process_poll("s", &[], 99_999);
         assert!(lc.poll_targets().is_empty());
     }
 
@@ -937,8 +998,78 @@ mod tests {
     fn poll_ignores_apps_without_process() {
         let mut lc = Lifecycle::new(vec![keep("j")]);
         up(&mut lc, "j");
-        assert_eq!(lc.process_poll("j", false, 99_999), vec![]);
+        assert_eq!(lc.process_poll("j", &[], 99_999), vec![]);
         assert!(lc.is_running("j"));
+    }
+
+
+    // quick re-select after Home (review 3.1 critical)
+    #[test]
+    fn process_app_reselect_within_the_kill_window_ignores_the_dying_process() {
+        let mut lc = Lifecycle::new(vec![proc_app("s")]);
+        up(&mut lc, "s");
+        lc.process_exited("s", 100, 0);
+        lc.process_poll("s", &[7], 1_000);
+        assert_eq!(lc.home(true), vec![Step::ActivateLumen, term("s", Some(100), &[50], Some("~/real/shell"))]);
+        lc.retire_pids("s", &[7, 8]);
+        assert_eq!(lc.select("s", 2_000), vec![Step::Spawn("s".into())]);
+        lc.set_pid("s", 200);
+        // the old shell is still alive: not the new run
+        assert_eq!(lc.process_poll("s", &[7], 3_000), vec![]);
+        // the old window closes late: not an event of the new run
+        assert_eq!(lc.window_closed(50), vec![]);
+        lc.window_opened(&win(60, "s"), 3_500);
+        assert_eq!(lc.foreground(), &Foreground::App("s".into()));
+        // the old shell dies before the new one shows up: the launch is not dropped
+        assert_eq!(lc.process_poll("s", &[], 5_000), vec![]);
+        assert!(lc.is_running("s"));
+        // the new shell appears, runs, and exits: that is the app exiting
+        assert_eq!(lc.process_poll("s", &[9], 6_000), vec![]);
+        assert_eq!(lc.process_poll("s", &[], 20_000), vec![Step::ActivateLumen]);
+        assert!(!lc.is_running("s"));
+    }
+
+    #[test]
+    fn app_id_app_reselect_ignores_the_dying_window() {
+        let mut lc = Lifecycle::new(vec![spec("k")]);
+        up(&mut lc, "k");
+        assert_eq!(lc.home(true), vec![Step::ActivateLumen, term("k", Some(100), &[50], None)]);
+        lc.retire_pids("k", &[100]);
+        assert_eq!(lc.select("k", 2_000), vec![Step::Spawn("k".into())]);
+        lc.set_pid("k", 200);
+        // events of the old window must not bind to, or kill, the new run
+        assert_eq!(lc.window_changed(&win(50, "k"), 2_500), vec![]);
+        assert!(lc.snapshot().apps[0].launching);
+        assert_eq!(lc.window_closed(50), vec![]);
+        assert!(lc.is_running("k"));
+        // the new window binds
+        lc.window_opened(&win(51, "k"), 3_000);
+        assert_eq!(lc.foreground(), &Foreground::App("k".into()));
+        assert_eq!(lc.snapshot().apps[0].windows, vec![51]);
+    }
+
+    // Home fallback
+    #[test]
+    fn home_without_lumen_activated_always_activates_lumen() {
+        let mut lc = Lifecycle::new(vec![keep("j")]);
+        assert_eq!(lc.home(false), vec![Step::ActivateLumen]);
+        up(&mut lc, "j");
+        lc.window_opened(&lumen_win(true), 20);
+        // an unbound window has the screen while the planner says Lumen
+        assert_eq!(lc.home(false), vec![Step::ActivateLumen]);
+        assert!(lc.is_running("j"), "keep-alive stays");
+    }
+
+    #[test]
+    fn home_without_lumen_activated_terminates_a_launching_close_on_exit_app() {
+        let mut lc = Lifecycle::new(vec![spec("a"), keep("j")]);
+        lc.select("a", 0);
+        lc.set_pid("a", 100);
+        lc.select("j", 1);
+        assert_eq!(lc.home(false), vec![Step::ActivateLumen, term("a", Some(100), &[], None)]);
+        assert!(!lc.is_running("a"));
+        assert!(lc.is_running("j"), "a launching keep-alive app is left alone");
+        assert_eq!(lc.home(true), vec![], "Lumen active and nothing in front: Home is a no-op");
     }
 
     // M3.5 hook
@@ -980,7 +1111,7 @@ mod tests {
     fn home_while_launching_with_no_window_does_nothing() {
         let mut lc = Lifecycle::new(vec![excl("k")]);
         lc.select("k", 0);
-        assert_eq!(lc.home(), vec![]);
+        assert_eq!(lc.home(true), vec![]);
         assert!(lc.is_running("k"), "still launching");
         assert!(lc.snapshot().apps[0].launching);
     }
@@ -1096,12 +1227,13 @@ mod tests {
         assert_eq!((id.as_str(), rpid, code), ("t", pid, 7));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn terminate_kills_a_stubborn_child() {
         let e = entry("id=\"t\"\nname=\"T\"\nlaunch=\"sleep 60\"\n");
         let (tx, rx) = std::sync::mpsc::channel();
         let pid = spawn(&e, DEFAULT_BROWSER, move |_, _, code| tx.send(code).unwrap()).unwrap();
         terminate(collect_targets(Some(pid), None), Duration::from_millis(50));
-        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), -SIGTERM);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), -libc::SIGTERM);
     }
 }
