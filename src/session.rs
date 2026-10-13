@@ -129,6 +129,7 @@ fn describe(steps: &[Step]) -> String {
             Step::ActivateLumen => "activate lumen".to_string(),
             Step::Fullscreen(w) => format!("fullscreen window {w}"),
             Step::Terminate(t) => format!("terminate {}", t.id),
+            Step::Pause { id, .. } => format!("pause {id}"),
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -169,6 +170,7 @@ fn run(steps: Vec<Step>) {
                     log_err("fullscreen", win.set_fullscreen(w));
                 }
             }
+            Step::Pause { pid, process, .. } => apps::pause_media(apps::collect_targets(pid, process.as_deref())),
             Step::Terminate(t) => {
                 println!("[apps] terminate {} pid={:?} windows={:?}", t.id, t.pid, t.windows);
                 // Collect before the windows close: the process tree is intact now.

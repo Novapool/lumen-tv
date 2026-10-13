@@ -94,6 +94,8 @@ pub enum Step {
     ActivateLumen,
     Fullscreen(u64),
     Terminate(Termination),
+    /// Pause whatever media the app is playing (Home leaving a keep-alive app).
+    Pause { id: String, pid: Option<u32>, process: Option<String> },
 }
 
 #[allow(dead_code)] // M3.5 Settings
@@ -278,11 +280,15 @@ impl Lifecycle {
         };
         self.fg = Foreground::Lumen;
         let keep_alive = self.spec(&id).is_some_and(|s| s.keep_alive);
+        if keep_alive {
+            // Pause first, so the sound stops as the screen switches.
+            let pid = self.running.get(&id).and_then(|st| st.pid);
+            let process = self.spec(&id).and_then(|s| s.process.clone());
+            return vec![Step::Pause { id, pid, process }, Step::ActivateLumen];
+        }
         let mut steps = vec![Step::ActivateLumen];
-        if !keep_alive {
-            if let Some(st) = self.running.remove(&id) {
-                steps.push(Step::Terminate(self.termination(&id, st)));
-            }
+        if let Some(st) = self.running.remove(&id) {
+            steps.push(Step::Terminate(self.termination(&id, st)));
         }
         steps
     }
@@ -665,6 +671,40 @@ pub fn terminate(pids: Vec<u32>, pre_delay: Duration) {
     });
 }
 
+/// MPRIS bus names (`org.mpris.MediaPlayer2.*`) owned by one of `pids`, from
+/// `busctl --user list --no-legend` (columns: name, pid, ...).
+pub fn mpris_players(busctl_list: &str, pids: &[u32]) -> Vec<String> {
+    busctl_list
+        .lines()
+        .filter_map(|l| {
+            let mut cols = l.split_whitespace();
+            let name = cols.next()?;
+            let pid: u32 = cols.next()?.parse().ok()?;
+            (name.starts_with("org.mpris.MediaPlayer2.") && pids.contains(&pid)).then(|| name.to_string())
+        })
+        .collect()
+}
+
+/// On its own thread: send MPRIS Pause to every player the processes in
+/// `pids` own (Chromium registers one per browser, as `...chromium.instance<pid>`).
+/// Pausing a paused player is a no-op.
+#[cfg(target_os = "linux")]
+pub fn pause_media(pids: Vec<u32>) {
+    std::thread::spawn(move || {
+        let Ok(out) = Command::new("busctl").args(["--user", "list", "--no-legend"]).output() else {
+            eprintln!("[apps] pause: busctl not found");
+            return;
+        };
+        for name in mpris_players(&String::from_utf8_lossy(&out.stdout), &pids) {
+            let ok = Command::new("busctl")
+                .args(["--user", "call", &name, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Pause"])
+                .status()
+                .is_ok_and(|s| s.success());
+            println!("[apps] pause {name}: {}", if ok { "ok" } else { "failed" });
+        }
+    });
+}
+
 /// Polls about once a second for the `process` of each target (`Lifecycle::
 /// poll_targets`), reporting `(id, pids)`: every PID that matches. Does nothing while there are no
 /// targets, so it costs nothing unless such an app is running.
@@ -777,12 +817,31 @@ mod tests {
     }
 
     #[test]
-    fn home_keep_alive_returns_and_keeps_running() {
+    fn home_keep_alive_pauses_returns_and_keeps_running() {
         let mut lc = Lifecycle::new(vec![keep("j")]);
         up(&mut lc, "j");
-        assert_eq!(lc.home(true), vec![Step::ActivateLumen]);
+        assert_eq!(
+            lc.home(true),
+            vec![Step::Pause { id: "j".into(), pid: Some(100), process: None }, Step::ActivateLumen]
+        );
         assert!(lc.is_running("j"));
         assert_eq!(lc.foreground(), &Foreground::Lumen);
+    }
+
+    #[test]
+    fn mpris_players_picks_the_apps_players_only() {
+        let list = "\
+:1.6                                          1194 mpris-proxy laith :1.6   user@1000.service - -
+org.mpris.MediaPlayer2.chromium.instance12161 12161 chromium   laith :1.119 user@1000.service - -
+org.mpris.MediaPlayer2.chromium.instance900   900   chromium   laith :1.120 user@1000.service - -
+org.freedesktop.Notifications                 -     -          -     (activatable) -        - -
+org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user@1000.service - -
+";
+        assert_eq!(mpris_players(list, &[12161, 12170]), vec![
+            "org.mpris.MediaPlayer2.chromium.instance12161".to_string(),
+            "org.mpris.MediaPlayer2.other".to_string(),
+        ]);
+        assert!(mpris_players(list, &[1]).is_empty());
     }
 
     #[test]
