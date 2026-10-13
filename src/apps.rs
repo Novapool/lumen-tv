@@ -22,6 +22,10 @@ pub const LUMEN_APP_ID: &str = "lumen-tv";
 /// An app without an `app_id` binds the first new window opened this soon
 /// after launch; a `process` app that never shows up in this long failed.
 pub const BIND_WINDOW_MS: u64 = 30_000;
+/// A `process` app may close its last window and open another (Steam Link
+/// swaps its menu window for the stream window, ~2 s apart). If its process
+/// is still alive this long after with no window, it is ended.
+pub const WINDOWLESS_MS: u64 = 10_000;
 /// `{id}` gives each web app its own Chromium profile (otherwise a second
 /// launch hands off to the running browser and exits) and its own Wayland
 /// app_id, `lumen-<id>`, so two web apps' windows can be told apart.
@@ -117,6 +121,8 @@ struct AppState {
     since_ms: u64,
     /// `process` apps: the process has been found at least once.
     seen: bool,
+    /// `process` apps: when the last window closed while the process lived on.
+    windowless_since: Option<u64>,
 }
 
 /// What a Terminate left behind: windows and processes that are still dying
@@ -292,10 +298,14 @@ impl Lifecycle {
     /// Which running app does an unbound window belong to?
     fn bind_target(&self, w: &WindowInfo, now_ms: u64, opened: bool) -> Option<String> {
         let launching = |id: &String| self.running.get(id).is_some_and(|st| st.windows.is_empty());
+        // A `process` app's real process may open its own windows, named
+        // after it (Steam Link's stream window has app_id "shell").
+        let process_name = |s: &Spec| s.process.as_deref().and_then(|p| p.rsplit('/').next()).map(str::to_string);
         let by_app_id = |s: &&Spec| {
             self.running.contains_key(&s.id)
                 && !w.app_id.is_empty()
-                && s.app_id.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(&w.app_id))
+                && (s.app_id.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(&w.app_id))
+                    || process_name(s).is_some_and(|n| n == w.app_id))
         };
         let mut matches: Vec<&Spec> = self.specs.iter().filter(by_app_id).collect();
         // Prefer the app that is still waiting for its first window.
@@ -335,6 +345,7 @@ impl Lifecycle {
         let st = self.running.get_mut(&id).unwrap();
         let first = st.windows.is_empty();
         st.windows.push(w.id);
+        st.windowless_since = None;
         if first {
             self.fg = Foreground::App(id);
             if !w.fullscreen {
@@ -346,8 +357,10 @@ impl Lifecycle {
         vec![]
     }
 
-    /// The last bound window of an app closing ends the app (every app).
-    pub fn window_closed(&mut self, window: u64) -> Vec<Step> {
+    /// The last bound window of an app closing ends the app, except for a
+    /// `process` app: the poll decides when it is gone, and it may open a new
+    /// window (see `WINDOWLESS_MS`).
+    pub fn window_closed(&mut self, window: u64, now_ms: u64) -> Vec<Step> {
         self.retiring.retain(|_, r| {
             r.windows.retain(|&w| w != window);
             !(r.windows.is_empty() && r.pids.is_empty())
@@ -359,13 +372,23 @@ impl Lifecycle {
         if !self.running[&id].windows.is_empty() {
             return vec![];
         }
+        if self.spec(&id).is_some_and(|s| s.process.is_some()) {
+            self.running.get_mut(&id).unwrap().windowless_since = Some(now_ms);
+            return vec![];
+        }
+        self.end_windowless(&id)
+    }
+
+    /// Ends an app that has no window left: back to Lumen if it was in front,
+    /// then sweep the process, which may outlive its window.
+    fn end_windowless(&mut self, id: &str) -> Vec<Step> {
+        let id = id.to_string();
         let st = self.running.remove(&id).unwrap();
         let mut steps = Vec::new();
         if self.fg == Foreground::App(id.clone()) {
             self.fg = Foreground::Lumen;
             steps.push(Step::ActivateLumen);
         }
-        // The process may outlive its window; sweep it.
         steps.push(Step::Terminate(self.termination(&id, st)));
         steps
     }
@@ -415,6 +438,9 @@ impl Lifecycle {
         let Some(st) = self.running.get_mut(id) else { return vec![] };
         if found {
             st.seen = true;
+            if st.windowless_since.is_some_and(|t| now_ms.saturating_sub(t) > WINDOWLESS_MS) {
+                return self.end_windowless(id);
+            }
             return vec![];
         }
         let never_came_up = !st.seen && st.windows.is_empty() && now_ms.saturating_sub(st.since_ms) > BIND_WINDOW_MS;
@@ -872,11 +898,11 @@ mod tests {
         let mut lc = Lifecycle::new(vec![keep("j")]);
         up(&mut lc, "j");
         lc.window_opened(&win(51, "j"), 20);
-        assert_eq!(lc.window_closed(50), vec![]);
+        assert_eq!(lc.window_closed(50, 0), vec![]);
         assert!(lc.is_running("j"));
-        assert_eq!(lc.window_closed(51), vec![Step::ActivateLumen, term("j", Some(100), &[], None)]);
+        assert_eq!(lc.window_closed(51, 0), vec![Step::ActivateLumen, term("j", Some(100), &[], None)]);
         assert!(!lc.is_running("j"));
-        assert_eq!(lc.window_closed(51), vec![]);
+        assert_eq!(lc.window_closed(51, 0), vec![]);
     }
 
     #[test]
@@ -884,7 +910,7 @@ mod tests {
         let mut lc = Lifecycle::new(vec![keep("j")]);
         up(&mut lc, "j");
         lc.window_changed(&lumen_win(true), 20);
-        assert_eq!(lc.window_closed(50), vec![term("j", Some(100), &[], None)]);
+        assert_eq!(lc.window_closed(50, 0), vec![term("j", Some(100), &[], None)]);
     }
 
     // launch failure
@@ -964,14 +990,42 @@ mod tests {
     }
 
     #[test]
-    fn process_app_last_window_closing_still_auto_returns() {
+    fn process_app_survives_swapping_its_window() {
         let mut lc = Lifecycle::new(vec![proc_app("s")]);
         up(&mut lc, "s");
         lc.process_exited("s", 100, 0);
+        lc.process_poll("s", &[7], 1_000);
+        assert_eq!(lc.window_closed(50, 2_000), vec![], "the poll decides, not the window");
+        assert!(lc.is_running("s"));
+        lc.window_changed(&lumen_win(true), 2_000);
+        assert_eq!(lc.process_poll("s", &[7], 3_000), vec![]);
+        lc.window_opened(&win(52, "shell"), 4_000);
+        assert_eq!(lc.foreground(), &Foreground::App("s".into()), "the process's own window binds");
+        assert_eq!(lc.process_poll("s", &[7], 60_000), vec![], "a bound window clears the timer");
+    }
+
+    #[test]
+    fn process_app_exiting_after_its_window_closed_returns_to_lumen() {
+        let mut lc = Lifecycle::new(vec![proc_app("s")]);
+        up(&mut lc, "s");
+        lc.process_poll("s", &[7], 1_000);
+        lc.window_closed(50, 2_000);
+        assert_eq!(lc.process_poll("s", &[], 3_000), vec![Step::ActivateLumen]);
+        assert!(!lc.is_running("s"));
+    }
+
+    #[test]
+    fn process_app_alive_without_a_window_is_ended_after_the_grace() {
+        let mut lc = Lifecycle::new(vec![proc_app("s")]);
+        up(&mut lc, "s");
+        lc.process_poll("s", &[7], 1_000);
+        lc.window_closed(50, 2_000);
+        assert_eq!(lc.process_poll("s", &[7], 2_000 + WINDOWLESS_MS), vec![]);
         assert_eq!(
-            lc.window_closed(50),
+            lc.process_poll("s", &[7], 2_001 + WINDOWLESS_MS),
             vec![Step::ActivateLumen, term("s", Some(100), &[], Some("~/real/shell"))]
         );
+        assert!(!lc.is_running("s"));
     }
 
     #[test]
@@ -1016,7 +1070,7 @@ mod tests {
         // the old shell is still alive: not the new run
         assert_eq!(lc.process_poll("s", &[7], 3_000), vec![]);
         // the old window closes late: not an event of the new run
-        assert_eq!(lc.window_closed(50), vec![]);
+        assert_eq!(lc.window_closed(50, 0), vec![]);
         lc.window_opened(&win(60, "s"), 3_500);
         assert_eq!(lc.foreground(), &Foreground::App("s".into()));
         // the old shell dies before the new one shows up: the launch is not dropped
@@ -1039,7 +1093,7 @@ mod tests {
         // events of the old window must not bind to, or kill, the new run
         assert_eq!(lc.window_changed(&win(50, "k"), 2_500), vec![]);
         assert!(lc.snapshot().apps[0].launching);
-        assert_eq!(lc.window_closed(50), vec![]);
+        assert_eq!(lc.window_closed(50, 0), vec![]);
         assert!(lc.is_running("k"));
         // the new window binds
         lc.window_opened(&win(51, "k"), 3_000);
@@ -1147,7 +1201,7 @@ mod tests {
             "no stale pid or window carried over"
         );
         // the old window id (50) closing late must not end the new run
-        assert_eq!(lc.window_closed(50), vec![]);
+        assert_eq!(lc.window_closed(50, 0), vec![]);
         assert!(lc.is_running("j"));
     }
 
@@ -1155,7 +1209,7 @@ mod tests {
     fn exit_after_the_window_closed_is_a_no_op() {
         let mut lc = Lifecycle::new(vec![keep("j")]);
         up(&mut lc, "j");
-        lc.window_closed(50);
+        lc.window_closed(50, 0);
         assert_eq!(lc.process_exited("j", 100, 0), vec![]);
     }
 

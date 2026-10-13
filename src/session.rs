@@ -292,7 +292,8 @@ fn window_event(ev: WindowEvent) {
             println!("[windows] closed id={id}");
             with_ctx(|c| {
                 c.seen.remove(&id);
-                c.lc.window_closed(id)
+                let now_ms = c.t0.elapsed().as_millis() as u64;
+                c.lc.window_closed(id, now_ms)
             })
         }
     };
