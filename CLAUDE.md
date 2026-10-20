@@ -6,9 +6,10 @@ Lumen: an Apple TV-style launcher for pitv (Rust + Slint UI, evdev input, labwc 
 - `BRIEF.md`: Laith's original spec. Read before planning or changing scope. Never edit it (scope changes go in MILESTONES.md).
 - `MILESTONES.md`: scope changes, milestone specs + Gate lines. Read before starting or closing a milestone.
 - `IN-PROGRESS.md`: current state, Slint rules, open questions, next steps. Read before any work.
+- `docs/ARCHIVE.md`: old milestone execution notes. Read on demand only.
 
 ## Layout
-- `src/`: Rust (main + Slint callbacks, input, registry, apps, icons, bake, `session.rs` = glue between registry, lifecycle, windows and the Home gate, `platform/`). `ui/`: `.slint` files, compiled by `build.rs`.
+- `src/`: Rust (main + Slint callbacks, input, registry, apps, icons, bake, `diag.rs`/`logtail.rs` = Settings panel data + log capture, `reclaim.rs` = CEC remote re-claim, `session.rs` = glue between registry, lifecycle, windows and the Home gate, `platform/`). `ui/`: `.slint` files (`settings.slint` = Settings screen), compiled by `build.rs`.
 - `config/input/`: shipped input mapping files (built into the binary). `config/apps/`: default app registry TOMLs (built in; seeded to `~/.config/lumen-tv/apps/`).
 - `examples/`: `fake-pad.rs` (virtual controller), `press.rs` (taps keys via uinput) and `toplevels.rs` (lists labwc toplevels): the M3 gate instruments.
 - `session/`: labwc config, `start-lumen.sh`, `lumen-test.service`, sudoers. `scripts/pi-build.sh`: sync to pitv and build there.

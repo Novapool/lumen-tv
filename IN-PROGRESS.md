@@ -1,30 +1,32 @@
 # In Progress — Lumen (lumen-tv)
 
-Last updated: 2026-10-13
+Last updated: 2026-10-19
 
 ## Where we are
-Lumen's UI is Slint (femtovg), 60 fps at 1080p60 and 4K60 on the TV. M3 done (2026-10-13): app registry with icon tiles; Jellyfin/Plex (Chromium kiosk), Steam Link and Kodi launch from Lumen; keep-alive/exclusive policies; Home (keyboard F1) works from any app and pauses its media; auto-return when an app dies. **Next: M3.5 = Settings/diagnostics screen + the LG TV remote working everywhere** (Gate confirmed by Laith 2026-10-13, see MILESTONES.md). Then M4 Store → M4.5 controllers + Bluetooth pairing screen → M5 boot session. Kodi still boots by default; Lumen runs from `lumen-test.service`.
+Lumen's UI is Slint (femtovg), 60 fps at 1080p60 and 4K60 on the TV. M3 done (2026-10-13): app registry with icon tiles; Jellyfin (Chromium kiosk), Steam Link and Kodi launch from Lumen; keep-alive/exclusive policies; Home works from any app and pauses its media; auto-return when an app dies. M3.5 done (2026-10-19): Settings/diagnostics screen (Display, Input, Apps, Running, Log, Toggles) and the LG TV remote drives everything on its own (red = Home). **Next: M4 Store.** Then M4.5 controllers + Bluetooth pairing screen → M5 boot session. Kodi still boots by default; Lumen runs from `lumen-test.service`.
 
 ## Active Plan
-Build M3.5 → M4 → M4.5 → M5 in order (see MILESTONES.md), stopping after each one for a TV test.
+Build M4 → M4.5 → M5 in order (see MILESTONES.md), stopping after each one for a TV test.
 
-Layout (as built; `store.rs`, `store.slint`/`details.slint` arrive in M4, `settings.slint` in M3.5):
+Layout (as built; `store.rs`, `store.slint`/`details.slint` arrive in M4):
 ```
 lumen-tv/
   Cargo.toml, build.rs     one crate; slint-build compiles ui/
   src/
-    main.rs                window setup, Slint callbacks, input gate, bench hook
+    main.rs                window setup, Slint callbacks, Settings wiring, input gate, bench hook
     session.rs             glue: lifecycle + windows + tiles (UI thread)
     apps.rs                Lifecycle planner (pure, tested) + process control, MPRIS pause
     registry.rs, icons.rs  app TOMLs; icon lookup + bake onto tiles
-    bake.rs, bench.rs      CPU-baked images; LUMEN_BENCH frame-time bench
+    bake.rs, bench.rs      CPU-baked images; LUMEN_BENCH frame-time bench + FpsMeter
+    diag.rs, logtail.rs    Settings panel data; capture of Lumen's own log for the Log panel
+    reclaim.rs             re-claim the CEC remote after an app exits (debounced)
     input/                 evdev reader, hotplug, mapping loader, repeat/deadzone, dispatch
     platform/mod.rs        traits: Windows, Tv
-    platform/pi.rs         CEC remote claim (cec-ctl)
+    platform/pi.rs         CEC remote claim (cec-ctl) + OK/Back keymap remap
     platform/toplevel.rs   labwc wlr-foreign-toplevel
-  ui/                      app.slint (screens, focus; Store/Settings tiles do nothing yet), tile.slint, theme.slint
+  ui/                      app.slint (screens, focus; Store tile does nothing yet), settings.slint, tile.slint, theme.slint
   config/input/            keyboard, xbox, playstation, gamepad, cec-remote (.toml)
-  config/apps/             default registry entries
+  config/apps/             default registry entries; config/kodi-tile = Kodi tile launcher (CEC off)
   examples/                fake-pad.rs, press.rs, toplevels.rs (gate tools)
   session/                 labwc rc.xml, start-lumen.sh, lumen-test.service, sudoers
   scripts/pi-build.sh      rsync to pitv + cargo build --release there
@@ -60,6 +62,11 @@ Decisions so far:
 - (2026-10-10) `session/labwc/rc.xml` swallows F1 and Super_L so clients (Chromium help) never see Home. The action must be `Execute command="true"`, since `None` clears the binding. Gate tools: `examples/press.rs`, `examples/toplevels.rs`.
 - (2026-10-13) Home from a keep-alive app sends MPRIS Pause (`busctl --user`, players owned by the app's process tree). Reselect does not auto-resume (Laith).
 
+- (2026-10-13) TV remote (LG basic, SIMPLINK on): Lumen claims `/dev/cec0` as plain Playback "Lumen" (`cec-ctl --playback --osd-name Lumen`, then active source 2.0.0.0); the LG vendor ID 0x00e091 forwarded nothing extra. Home/Settings/Exit and a held Back never reach the Pi (the TV opens its own menu), so **red = Home** (KEY_RED 398 > 247, never reaches XKB, no rc.xml swallow needed); keyboard F1 stays Home.
+- (2026-10-13) Kernel keymap remap on every claim (EVIOCSKEYCODE_V2 on `vc4-hdmi-0`): OK 0x00 KEY_OK→KEY_ENTER, Back 0x0d KEY_EXIT→KEY_BACK, so Chromium/Jellyfin web act on them. `cec-remote.toml` lists post-remap codes plus KEY_OK/KEY_EXIT as a fallback.
+- (2026-10-13) Kodi tile runs through `~/.local/bin/kodi-tile` (own home `~/.kodi-tile`, userdata linked to `~/.kodi`, CEC peripheral forced off) so Lumen keeps the remote; the boot Kodi is untouched. After any app exits Lumen re-claims the remote + active source (`src/reclaim.rs`). Backup `~/.kodi-backup-20261013`.
+- (2026-10-13) Plex removed (Laith): Jellyfin covers it.
+
 ## Slint rules (from the spike)
 - Never animate a drop shadow's size or blur: the blur re-renders every frame (56.5 fps, 5.2% slow). Keep the shadow box fixed and fade it with `opacity`. Slint draws no shadow for an unfilled Rectangle, so fill it and hide it behind the face.
 - Slint redraws only on change: frame stats count only frames while something is animating.
@@ -71,7 +78,7 @@ Decisions so far:
 - `if`-created drop-shadow elements re-blur every time they are created; use one fixed shadow Image and fade it.
 
 ## Current Work
-- M3.5 not started. Kickoff brief below (Next Steps 1). No AGENT_JOBS.md exists yet.
+- M4 Store planning (orchestrator writes `AGENT_JOBS.md`).
 
 ## Known issues
 - After `systemctl stop lumen-test`, its ExecStopPost starts Kodi: wait until kodi is active before starting a test unit again.
@@ -86,18 +93,18 @@ Decisions so far:
 - Steam Link needs Xwayland, and labwc must be restarted after installing it (restart `lumen-test`).
 - Flatpak apps: the launched process is a wrapper, so descendants (`bwrap`/app) may outlive close; set `process` and check the terminate path before shipping one.
 
+- Output mode resets to 4K after the TV power-cycles: labwc drops and re-adds HDMI-A-1 at its preferred 3840x2160, and only `start-lumen.sh` applies `LUMEN_MODE` (1080p60 default), once at start. Found at the M3.5 TV check (2026-10-19). Lumen holds 60 fps at 4K, so this is a perf/consistency issue, not a breakage. Fix candidate: re-apply the mode when the output reappears.
+
 ## Blockers
 - (none)
 - Bench is thermally sensitive: the Pi has no fan; after long builds it throttles at 75-82 C and 4K drops to 45-55 fps (a cool 4K run passed at 60). Let it cool before benching.
 
 ## Next Steps
-1. **M3.5 kickoff (orchestrator, cold start).** Read MILESTONES.md M3.5 (scope + confirmed Gate), this file's Settled / Slint rules / Known issues, and `../CLAUDE.md` (Pi access, sudo rules). Then write AGENT_JOBS.md. Suggested shape:
-   - **Phase 0, remote probe (needs Laith at the TV, no code):** with lumen-test running, record what the LG remote sends: `evtest /dev/input/event5` + `cec-ctl -d /dev/cec0 -M` while Laith presses every button (Up/Down/Left/Right/OK/Back/Home/Exit/Menu/Play/Pause/colours). Retry with `cec-ctl --playback --vendor-id 0x00e091` and other device types if Back/Home stay silent. Ask Laith whether Back works under plain Kodi; if so, capture what libcec announces. Output: the real key table, the chosen Home key (or the fallback Laith picks), and whether Chromium reacts to KEY_OK/KEY_EXIT. sudo for cec-ctl is likely needed: give Laith the commands.
-   - **Phase 1, parallel builders:** (a) remote: fix the CEC claim in `platform/pi.rs`, trim `cec-remote.toml`, rc.xml swallow for the Home key, key remaps for Chromium if needed, re-claim after Kodi exits (`session.rs` on Kodi's exit); (b) Settings screen: new `ui/settings.slint` + a Rust data feed (fps from bench, input devices + last action from `input/`, registry errors from `registry.rs`, `Lifecycle::snapshot()` already exists for running apps, log tail), toggles for input debug and bench; keep to the Slint rules (no live shadows/gradients; 59 fps gate).
-   - **Phase 2:** review/simplify/tests, then build on the Pi (`scripts/pi-build.sh`, `cargo test --release` on the Pi), automated checks (bench with Settings open), then Laith's TV checklist = the Gate.
-2. Parked: controllers + Bluetooth pairing screen are M4.5; boot session is M5. Don't start them in M3.5.
+1. **M4 Store kickoff (orchestrator).** Read MILESTONES.md M4 (scope + Gate), BRIEF.md's store section, this file's Settled / Slint rules / Known issues, and `../CLAUDE.md`. Write AGENT_JOBS.md. The Gate needs a manifest with at least one real installable app and one deliberately failing entry; every install/uninstall command is shown to Laith before it runs.
+2. Decide whether to fold the 4K-after-power-cycle fix (Known issues) into M4 or leave it for M5.
+3. Parked: controllers + Bluetooth pairing screen are M4.5; boot session is M5.
 
 ## Recently Completed
+- M3.5 Settings/diagnostics + TV remote (2026-10-19): gate passed on the Pi and at the TV (all S/R/G checks; red = Home 5/5 from Jellyfin, Kodi, Steam Link; remote works after Kodi closes). Result line in MILESTONES.md, execution notes in docs/ARCHIVE.md.
 - M3 Registry + launching + icons (2026-10-13): gate passed on the Pi and at the TV (Home 2–7 ms, same-PID reselect 5/5, exclusive kill 1.2 s, SSH kill → Lumen 23 ms, Steam Link smooth with sound). Late fixes: F1 swallowed in labwc (665c03d), Steam Link window swap (2458926), Home pauses media via MPRIS (bb61e09). Result line in MILESTONES.md.
 - 4K bake merge (2026-10-08): `exp/baked-hero` merged into main (0abbe64). 4K60 59.7 fps / 0.4% > 25 ms / p95 17.4 ms (was 27.8 fps); 1080p60 60.0 / 0.1% / p95 17.1. M2 input kept; HDMI remote verified at 4K. Default stays 1080p. Branch, worktree and `~/lumen-bake` on the Pi removed.
-- M1.5 Slint port (2026-10-08): gate passed (60.0 fps, 0.1% > 25 ms, Laith: no artifacts). Spike branch tagged `spike-slint-2026-10-08`, worktree and Pi test files removed.
