@@ -95,10 +95,13 @@ pub enum Step {
     Fullscreen(u64),
     Terminate(Termination),
     /// Pause whatever media the app is playing (Home leaving a keep-alive app).
-    Pause { id: String, pid: Option<u32>, process: Option<String> },
+    Pause {
+        id: String,
+        pid: Option<u32>,
+        process: Option<String>,
+    },
 }
 
-#[allow(dead_code)] // M3.5 Settings
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppSnapshot {
     pub id: String,
@@ -109,7 +112,6 @@ pub struct AppSnapshot {
 }
 
 /// Read-only view for the M3.5 Settings screen.
-#[allow(dead_code)] // M3.5 Settings
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub foreground: Foreground,
@@ -149,7 +151,12 @@ pub struct Lifecycle {
 
 impl Lifecycle {
     pub fn new(specs: Vec<Spec>) -> Lifecycle {
-        Lifecycle { specs, running: BTreeMap::new(), retiring: BTreeMap::new(), fg: Foreground::Lumen }
+        Lifecycle {
+            specs,
+            running: BTreeMap::new(),
+            retiring: BTreeMap::new(),
+            fg: Foreground::Lumen,
+        }
     }
 
     fn spec(&self, id: &str) -> Option<&Spec> {
@@ -160,12 +167,10 @@ impl Lifecycle {
         self.running.contains_key(id)
     }
 
-    #[allow(dead_code)] // tests now, Settings in M3.5
     pub fn foreground(&self) -> &Foreground {
         &self.fg
     }
 
-    #[allow(dead_code)] // M3.5 Settings
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             foreground: self.fg.clone(),
@@ -202,12 +207,20 @@ impl Lifecycle {
     pub fn retire_pids(&mut self, id: &str, pids: &[u32]) {
         // Only `process` apps are polled, so only they have PIDs to ignore.
         if self.spec(id).is_some_and(|s| s.process.is_some()) {
-            self.retiring.entry(id.to_string()).or_default().pids.extend_from_slice(pids);
+            self.retiring
+                .entry(id.to_string())
+                .or_default()
+                .pids
+                .extend_from_slice(pids);
         }
     }
 
     fn termination(&mut self, id: &str, st: AppState) -> Termination {
-        self.retiring.entry(id.to_string()).or_default().windows.extend_from_slice(&st.windows);
+        self.retiring
+            .entry(id.to_string())
+            .or_default()
+            .windows
+            .extend_from_slice(&st.windows);
         Termination {
             id: id.to_string(),
             pid: st.pid,
@@ -229,7 +242,9 @@ impl Lifecycle {
     }
 
     pub fn select(&mut self, id: &str, now_ms: u64) -> Vec<Step> {
-        let Some(spec) = self.spec(id).cloned() else { return vec![] };
+        let Some(spec) = self.spec(id).cloned() else {
+            return vec![];
+        };
         if let Some(st) = self.running.get(id) {
             // Launching: a second select does nothing. Running: bring it back.
             return match st.windows.last() {
@@ -251,7 +266,13 @@ impl Lifecycle {
                 steps.push(Step::Terminate(self.termination(&other, st)));
             }
         }
-        self.running.insert(id.to_string(), AppState { since_ms: now_ms, ..Default::default() });
+        self.running.insert(
+            id.to_string(),
+            AppState {
+                since_ms: now_ms,
+                ..Default::default()
+            },
+        );
         steps.push(Step::Spawn(id.to_string()));
         steps
     }
@@ -269,7 +290,9 @@ impl Lifecycle {
             let launching: Vec<String> = self
                 .running
                 .iter()
-                .filter(|(id, st)| st.windows.is_empty() && !self.spec(id).is_some_and(|s| s.keep_alive))
+                .filter(|(id, st)| {
+                    st.windows.is_empty() && !self.spec(id).is_some_and(|s| s.keep_alive)
+                })
                 .map(|(id, _)| id.clone())
                 .collect();
             for id in launching {
@@ -306,11 +329,19 @@ impl Lifecycle {
         let launching = |id: &String| self.running.get(id).is_some_and(|st| st.windows.is_empty());
         // A `process` app's real process may open its own windows, named
         // after it (Steam Link's stream window has app_id "shell").
-        let process_name = |s: &Spec| s.process.as_deref().and_then(|p| p.rsplit('/').next()).map(str::to_string);
+        let process_name = |s: &Spec| {
+            s.process
+                .as_deref()
+                .and_then(|p| p.rsplit('/').next())
+                .map(str::to_string)
+        };
         let by_app_id = |s: &&Spec| {
             self.running.contains_key(&s.id)
                 && !w.app_id.is_empty()
-                && (s.app_id.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(&w.app_id))
+                && (s
+                    .app_id
+                    .as_deref()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(&w.app_id))
                     || process_name(s).is_some_and(|n| n == w.app_id))
         };
         let mut matches: Vec<&Spec> = self.specs.iter().filter(by_app_id).collect();
@@ -320,7 +351,13 @@ impl Lifecycle {
             return Some(s.id.clone());
         }
         // No app_id on the entry: the first new window within the bind period.
-        if !opened || self.specs.iter().any(|s| s.app_id.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(&w.app_id))) {
+        if !opened
+            || self.specs.iter().any(|s| {
+                s.app_id
+                    .as_deref()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(&w.app_id))
+            })
+        {
             return None;
         }
         self.specs
@@ -341,13 +378,20 @@ impl Lifecycle {
         if self.retiring.values().any(|r| r.windows.contains(&w.id)) {
             return vec![]; // a window of a run that is being terminated
         }
-        if let Some(id) = self.running.iter().find(|(_, st)| st.windows.contains(&w.id)).map(|(id, _)| id.clone()) {
+        if let Some(id) = self
+            .running
+            .iter()
+            .find(|(_, st)| st.windows.contains(&w.id))
+            .map(|(id, _)| id.clone())
+        {
             if w.activated {
                 self.fg = Foreground::App(id);
             }
             return vec![];
         }
-        let Some(id) = self.bind_target(w, now_ms, opened) else { return vec![] };
+        let Some(id) = self.bind_target(w, now_ms, opened) else {
+            return vec![];
+        };
         let st = self.running.get_mut(&id).unwrap();
         let first = st.windows.is_empty();
         st.windows.push(w.id);
@@ -371,10 +415,19 @@ impl Lifecycle {
             r.windows.retain(|&w| w != window);
             !(r.windows.is_empty() && r.pids.is_empty())
         });
-        let Some(id) = self.running.iter().find(|(_, st)| st.windows.contains(&window)).map(|(id, _)| id.clone()) else {
+        let Some(id) = self
+            .running
+            .iter()
+            .find(|(_, st)| st.windows.contains(&window))
+            .map(|(id, _)| id.clone())
+        else {
             return vec![];
         };
-        self.running.get_mut(&id).unwrap().windows.retain(|&w| w != window);
+        self.running
+            .get_mut(&id)
+            .unwrap()
+            .windows
+            .retain(|&w| w != window);
         if !self.running[&id].windows.is_empty() {
             return vec![];
         }
@@ -401,7 +454,9 @@ impl Lifecycle {
 
     /// The launcher process (the PID from `set_pid`) exited with `code`.
     pub fn process_exited(&mut self, id: &str, pid: u32, code: i32) -> Vec<Step> {
-        let Some(st) = self.running.get(id) else { return vec![] };
+        let Some(st) = self.running.get(id) else {
+            return vec![];
+        };
         if st.pid.is_some_and(|p| p != pid) {
             return vec![]; // a stale reaper from an earlier run of this app
         }
@@ -441,15 +496,22 @@ impl Lifecycle {
                 self.retiring.remove(id);
             }
         }
-        let Some(st) = self.running.get_mut(id) else { return vec![] };
+        let Some(st) = self.running.get_mut(id) else {
+            return vec![];
+        };
         if found {
             st.seen = true;
-            if st.windowless_since.is_some_and(|t| now_ms.saturating_sub(t) > WINDOWLESS_MS) {
+            if st
+                .windowless_since
+                .is_some_and(|t| now_ms.saturating_sub(t) > WINDOWLESS_MS)
+            {
                 return self.end_windowless(id);
             }
             return vec![];
         }
-        let never_came_up = !st.seen && st.windows.is_empty() && now_ms.saturating_sub(st.since_ms) > BIND_WINDOW_MS;
+        let never_came_up = !st.seen
+            && st.windows.is_empty()
+            && now_ms.saturating_sub(st.since_ms) > BIND_WINDOW_MS;
         if st.seen || never_came_up {
             return self.finish(id);
         }
@@ -475,18 +537,27 @@ fn browser_line(browser_cmd: &str, id: &str, url: &str) -> String {
 
 /// `$LUMEN_BROWSER` or the default kiosk browser command.
 pub fn browser_cmd() -> String {
-    std::env::var("LUMEN_BROWSER").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| DEFAULT_BROWSER.to_string())
+    std::env::var("LUMEN_BROWSER")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_BROWSER.to_string())
 }
 
 pub fn program_on_path(program: &str) -> bool {
     if program.contains('/') {
-        return Path::new(program).is_file();
+        let home = std::env::var("HOME").unwrap_or_default();
+        return Path::new(&expand_tilde(program, &home)).is_file();
     }
-    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(program).is_file()))
+    std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(program).is_file()))
 }
 
 /// The shell line to `exec` for an entry. `on_path` is injected for tests.
-pub fn command_line(entry: &Entry, browser_cmd: &str, on_path: &dyn Fn(&str) -> bool) -> Result<String, String> {
+pub fn command_line(
+    entry: &Entry,
+    browser_cmd: &str,
+    on_path: &dyn Fn(&str) -> bool,
+) -> Result<String, String> {
     match entry.kind {
         Kind::Url => {
             let url = entry.url.as_deref().ok_or("no url")?;
@@ -494,7 +565,10 @@ pub fn command_line(entry: &Entry, browser_cmd: &str, on_path: &dyn Fn(&str) -> 
         }
         Kind::Command => {
             let launch = entry.launch.as_deref().ok_or("no launch line")?.trim();
-            let program = launch.split_whitespace().next().ok_or("empty launch line")?;
+            let program = launch
+                .split_whitespace()
+                .next()
+                .ok_or("empty launch line")?;
             if on_path(program) {
                 return Ok(launch.to_string());
             }
@@ -508,11 +582,14 @@ pub fn command_line(entry: &Entry, browser_cmd: &str, on_path: &dyn Fn(&str) -> 
 
 fn exit_code(status: std::process::ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
-    status.code().or_else(|| status.signal().map(|s| -s)).unwrap_or(-1)
+    status
+        .code()
+        .or_else(|| status.signal().map(|s| -s))
+        .unwrap_or(-1)
 }
 
 /// Starts the app as `sh -c 'exec ...'` in its own process group, with
-/// stdout/stderr inherited (journal) and Lumen's session environment. A
+/// stdout/stderr on the journal (the originals saved by `logtail`) and Lumen's session environment. A
 /// reaper thread calls `on_exit(id, pid, code)` when the launcher exits.
 pub fn spawn(
     entry: &Entry,
@@ -521,10 +598,13 @@ pub fn spawn(
 ) -> Result<u32, String> {
     use std::os::unix::process::CommandExt;
     let line = command_line(entry, browser_cmd, &program_on_path)?;
+    let (out, err) = crate::logtail::child_stdio();
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(format!("exec {line}"))
         .stdin(Stdio::null())
+        .stdout(out)
+        .stderr(err)
         .process_group(0)
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
@@ -557,7 +637,11 @@ pub fn parse_stat(line: &str) -> Option<Proc> {
     let mut rest = line[close + 1..].split_whitespace();
     rest.next()?; // state
     let ppid = rest.next()?.parse().ok()?;
-    Some(Proc { pid, ppid, comm: line[open + 1..close].to_string() })
+    Some(Proc {
+        pid,
+        ppid,
+        comm: line[open + 1..close].to_string(),
+    })
 }
 
 /// `root` and everything below it (breadth first). Follows ppid links, since
@@ -579,9 +663,15 @@ pub fn descendants(root: u32, table: &[Proc]) -> Vec<u32> {
 }
 
 pub fn read_table() -> Vec<Proc> {
-    let Ok(rd) = std::fs::read_dir("/proc") else { return vec![] };
+    let Ok(rd) = std::fs::read_dir("/proc") else {
+        return vec![];
+    };
     rd.flatten()
-        .filter(|e| e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit())))
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+        })
         .filter_map(|e| parse_stat(&std::fs::read_to_string(e.path().join("stat")).ok()?))
         .collect()
 }
@@ -614,7 +704,9 @@ pub fn find_pids(process: &str, table: &[Proc]) -> Vec<u32> {
         .iter()
         .filter(|p| {
             let exe = if by_path {
-                std::fs::read_link(format!("/proc/{}/exe", p.pid)).ok().map(|e| e.to_string_lossy().into_owned())
+                std::fs::read_link(format!("/proc/{}/exe", p.pid))
+                    .ok()
+                    .map(|e| e.to_string_lossy().into_owned())
             } else {
                 None
             };
@@ -680,7 +772,8 @@ pub fn mpris_players(busctl_list: &str, pids: &[u32]) -> Vec<String> {
             let mut cols = l.split_whitespace();
             let name = cols.next()?;
             let pid: u32 = cols.next()?.parse().ok()?;
-            (name.starts_with("org.mpris.MediaPlayer2.") && pids.contains(&pid)).then(|| name.to_string())
+            (name.starts_with("org.mpris.MediaPlayer2.") && pids.contains(&pid))
+                .then(|| name.to_string())
         })
         .collect()
 }
@@ -691,13 +784,23 @@ pub fn mpris_players(busctl_list: &str, pids: &[u32]) -> Vec<String> {
 #[cfg(target_os = "linux")]
 pub fn pause_media(pids: Vec<u32>) {
     std::thread::spawn(move || {
-        let Ok(out) = Command::new("busctl").args(["--user", "list", "--no-legend"]).output() else {
+        let Ok(out) = Command::new("busctl")
+            .args(["--user", "list", "--no-legend"])
+            .output()
+        else {
             eprintln!("[apps] pause: busctl not found");
             return;
         };
         for name in mpris_players(&String::from_utf8_lossy(&out.stdout), &pids) {
             let ok = Command::new("busctl")
-                .args(["--user", "call", &name, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Pause"])
+                .args([
+                    "--user",
+                    "call",
+                    &name,
+                    "/org/mpris/MediaPlayer2",
+                    "org.mpris.MediaPlayer2.Player",
+                    "Pause",
+                ])
                 .status()
                 .is_ok_and(|s| s.success());
             println!("[apps] pause {name}: {}", if ok { "ok" } else { "failed" });
@@ -731,25 +834,56 @@ mod tests {
     use super::*;
 
     fn spec(id: &str) -> Spec {
-        Spec { id: id.into(), exclusive: false, keep_alive: false, app_id: Some(id.into()), process: None }
+        Spec {
+            id: id.into(),
+            exclusive: false,
+            keep_alive: false,
+            app_id: Some(id.into()),
+            process: None,
+        }
     }
     fn keep(id: &str) -> Spec {
-        Spec { keep_alive: true, ..spec(id) }
+        Spec {
+            keep_alive: true,
+            ..spec(id)
+        }
     }
     fn excl(id: &str) -> Spec {
-        Spec { exclusive: true, ..spec(id) }
+        Spec {
+            exclusive: true,
+            ..spec(id)
+        }
     }
     fn proc_app(id: &str) -> Spec {
-        Spec { exclusive: true, process: Some("~/real/shell".into()), ..spec(id) }
+        Spec {
+            exclusive: true,
+            process: Some("~/real/shell".into()),
+            ..spec(id)
+        }
     }
     fn win(id: u64, app_id: &str) -> WindowInfo {
-        WindowInfo { id, app_id: app_id.into(), activated: true, fullscreen: true }
+        WindowInfo {
+            id,
+            app_id: app_id.into(),
+            activated: true,
+            fullscreen: true,
+        }
     }
     fn lumen_win(activated: bool) -> WindowInfo {
-        WindowInfo { id: 1, app_id: LUMEN_APP_ID.into(), activated, fullscreen: true }
+        WindowInfo {
+            id: 1,
+            app_id: LUMEN_APP_ID.into(),
+            activated,
+            fullscreen: true,
+        }
     }
     fn term(id: &str, pid: Option<u32>, windows: &[u64], process: Option<&str>) -> Step {
-        Step::Terminate(Termination { id: id.into(), pid, windows: windows.to_vec(), process: process.map(String::from) })
+        Step::Terminate(Termination {
+            id: id.into(),
+            pid,
+            windows: windows.to_vec(),
+            process: process.map(String::from),
+        })
     }
     /// Select `id`, give it pid 100 and one window 50 with its own app_id.
     fn up(lc: &mut Lifecycle, id: &str) {
@@ -774,7 +908,14 @@ mod tests {
         lc.select("p", 20);
         lc.set_pid("p", 200);
         let steps = lc.select("s", 30);
-        assert_eq!(steps, vec![term("j", Some(100), &[50], None), term("p", Some(200), &[], None), Step::Spawn("s".into())]);
+        assert_eq!(
+            steps,
+            vec![
+                term("j", Some(100), &[50], None),
+                term("p", Some(200), &[], None),
+                Step::Spawn("s".into())
+            ]
+        );
         assert!(!lc.is_running("j") && !lc.is_running("p") && lc.is_running("s"));
         assert_eq!(lc.foreground(), &Foreground::Lumen);
     }
@@ -822,7 +963,14 @@ mod tests {
         up(&mut lc, "j");
         assert_eq!(
             lc.home(true),
-            vec![Step::Pause { id: "j".into(), pid: Some(100), process: None }, Step::ActivateLumen]
+            vec![
+                Step::Pause {
+                    id: "j".into(),
+                    pid: Some(100),
+                    process: None
+                },
+                Step::ActivateLumen
+            ]
         );
         assert!(lc.is_running("j"));
         assert_eq!(lc.foreground(), &Foreground::Lumen);
@@ -837,10 +985,13 @@ org.mpris.MediaPlayer2.chromium.instance900   900   chromium   laith :1.120 user
 org.freedesktop.Notifications                 -     -          -     (activatable) -        - -
 org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user@1000.service - -
 ";
-        assert_eq!(mpris_players(list, &[12161, 12170]), vec![
-            "org.mpris.MediaPlayer2.chromium.instance12161".to_string(),
-            "org.mpris.MediaPlayer2.other".to_string(),
-        ]);
+        assert_eq!(
+            mpris_players(list, &[12161, 12170]),
+            vec![
+                "org.mpris.MediaPlayer2.chromium.instance12161".to_string(),
+                "org.mpris.MediaPlayer2.other".to_string(),
+            ]
+        );
         assert!(mpris_players(list, &[1]).is_empty());
     }
 
@@ -848,7 +999,10 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
     fn home_close_on_exit_returns_first_then_terminates() {
         let mut lc = Lifecycle::new(vec![excl("k")]);
         up(&mut lc, "k");
-        assert_eq!(lc.home(true), vec![Step::ActivateLumen, term("k", Some(100), &[50], None)]);
+        assert_eq!(
+            lc.home(true),
+            vec![Step::ActivateLumen, term("k", Some(100), &[50], None)]
+        );
         assert!(!lc.is_running("k"));
     }
 
@@ -857,7 +1011,12 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
     fn binds_by_app_id_and_fullscreens_when_needed() {
         let mut lc = Lifecycle::new(vec![spec("a"), spec("b")]);
         lc.select("a", 0);
-        let w = WindowInfo { id: 7, app_id: "A".into(), activated: true, fullscreen: false }; // case-insensitive
+        let w = WindowInfo {
+            id: 7,
+            app_id: "A".into(),
+            activated: true,
+            fullscreen: false,
+        }; // case-insensitive
         assert_eq!(lc.window_opened(&w, 5), vec![Step::Fullscreen(7)]);
         assert_eq!(lc.foreground(), &Foreground::App("a".into()));
         assert_eq!(lc.snapshot().apps[0].windows, vec![7]);
@@ -874,7 +1033,10 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
 
     #[test]
     fn binds_first_new_window_within_30s_without_app_id() {
-        let anon = Spec { app_id: None, ..spec("x") };
+        let anon = Spec {
+            app_id: None,
+            ..spec("x")
+        };
         let mut lc = Lifecycle::new(vec![anon.clone()]);
         lc.select("x", 1_000);
         assert_eq!(lc.window_opened(&win(9, "whatever"), 30_999), vec![]);
@@ -886,7 +1048,10 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         let mut late = Lifecycle::new(vec![anon]);
         late.select("x", 1_000);
         late.window_opened(&win(9, "whatever"), 31_001);
-        assert!(late.snapshot().apps[0].launching, "31 s after launch is too late");
+        assert!(
+            late.snapshot().apps[0].launching,
+            "31 s after launch is too late"
+        );
     }
 
     #[test]
@@ -901,7 +1066,10 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
 
     #[test]
     fn lumens_own_window_is_never_bound() {
-        let anon = Spec { app_id: None, ..spec("x") };
+        let anon = Spec {
+            app_id: None,
+            ..spec("x")
+        };
         let mut lc = Lifecycle::new(vec![anon]);
         lc.select("x", 0);
         lc.window_opened(&lumen_win(false), 1);
@@ -915,7 +1083,11 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         up(&mut lc, "j");
         assert_eq!(lc.foreground(), &Foreground::App("j".into()));
         lc.window_changed(&lumen_win(false), 20);
-        assert_eq!(lc.foreground(), &Foreground::App("j".into()), "deactivated Lumen changes nothing");
+        assert_eq!(
+            lc.foreground(),
+            &Foreground::App("j".into()),
+            "deactivated Lumen changes nothing"
+        );
         lc.window_changed(&lumen_win(true), 30);
         assert_eq!(lc.foreground(), &Foreground::Lumen);
         lc.window_changed(&win(50, "j"), 40);
@@ -959,7 +1131,10 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         lc.window_opened(&win(51, "j"), 20);
         assert_eq!(lc.window_closed(50, 0), vec![]);
         assert!(lc.is_running("j"));
-        assert_eq!(lc.window_closed(51, 0), vec![Step::ActivateLumen, term("j", Some(100), &[], None)]);
+        assert_eq!(
+            lc.window_closed(51, 0),
+            vec![Step::ActivateLumen, term("j", Some(100), &[], None)]
+        );
         assert!(!lc.is_running("j"));
         assert_eq!(lc.window_closed(51, 0), vec![]);
     }
@@ -969,7 +1144,10 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         let mut lc = Lifecycle::new(vec![keep("j")]);
         up(&mut lc, "j");
         lc.window_changed(&lumen_win(true), 20);
-        assert_eq!(lc.window_closed(50, 0), vec![term("j", Some(100), &[], None)]);
+        assert_eq!(
+            lc.window_closed(50, 0),
+            vec![term("j", Some(100), &[], None)]
+        );
     }
 
     // launch failure
@@ -981,7 +1159,11 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         assert_eq!(lc.process_exited("a", 100, 127), vec![]);
         assert!(!lc.is_running("a"));
         assert_eq!(lc.foreground(), &Foreground::Lumen);
-        assert_eq!(lc.select("a", 50), vec![Step::Spawn("a".into())], "can be launched again");
+        assert_eq!(
+            lc.select("a", 50),
+            vec![Step::Spawn("a".into())],
+            "can be launched again"
+        );
     }
 
     #[test]
@@ -998,7 +1180,11 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         let mut lc = Lifecycle::new(vec![proc_app("s")]);
         lc.select("s", 0);
         lc.set_pid("s", 100);
-        assert_eq!(lc.process_exited("s", 100, 0), vec![], "launching: no auto-return");
+        assert_eq!(
+            lc.process_exited("s", 100, 0),
+            vec![],
+            "launching: no auto-return"
+        );
         assert!(lc.is_running("s"));
         lc.window_opened(&win(50, "s"), 3_000);
         assert_eq!(lc.foreground(), &Foreground::App("s".into()));
@@ -1054,13 +1240,25 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         up(&mut lc, "s");
         lc.process_exited("s", 100, 0);
         lc.process_poll("s", &[7], 1_000);
-        assert_eq!(lc.window_closed(50, 2_000), vec![], "the poll decides, not the window");
+        assert_eq!(
+            lc.window_closed(50, 2_000),
+            vec![],
+            "the poll decides, not the window"
+        );
         assert!(lc.is_running("s"));
         lc.window_changed(&lumen_win(true), 2_000);
         assert_eq!(lc.process_poll("s", &[7], 3_000), vec![]);
         lc.window_opened(&win(52, "shell"), 4_000);
-        assert_eq!(lc.foreground(), &Foreground::App("s".into()), "the process's own window binds");
-        assert_eq!(lc.process_poll("s", &[7], 60_000), vec![], "a bound window clears the timer");
+        assert_eq!(
+            lc.foreground(),
+            &Foreground::App("s".into()),
+            "the process's own window binds"
+        );
+        assert_eq!(
+            lc.process_poll("s", &[7], 60_000),
+            vec![],
+            "a bound window clears the timer"
+        );
     }
 
     #[test]
@@ -1082,7 +1280,10 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         assert_eq!(lc.process_poll("s", &[7], 2_000 + WINDOWLESS_MS), vec![]);
         assert_eq!(
             lc.process_poll("s", &[7], 2_001 + WINDOWLESS_MS),
-            vec![Step::ActivateLumen, term("s", Some(100), &[], Some("~/real/shell"))]
+            vec![
+                Step::ActivateLumen,
+                term("s", Some(100), &[], Some("~/real/shell"))
+            ]
         );
         assert!(!lc.is_running("s"));
     }
@@ -1091,7 +1292,13 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
     fn process_app_terminate_carries_the_process_spec() {
         let mut lc = Lifecycle::new(vec![proc_app("s")]);
         up(&mut lc, "s");
-        assert_eq!(lc.home(true), vec![Step::ActivateLumen, term("s", Some(100), &[50], Some("~/real/shell"))]);
+        assert_eq!(
+            lc.home(true),
+            vec![
+                Step::ActivateLumen,
+                term("s", Some(100), &[50], Some("~/real/shell"))
+            ]
+        );
     }
 
     #[test]
@@ -1101,7 +1308,10 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         lc.select("j", 0);
         assert!(lc.poll_targets().is_empty());
         lc.select("s", 1);
-        assert_eq!(lc.poll_targets(), vec![("s".to_string(), "~/real/shell".to_string())]);
+        assert_eq!(
+            lc.poll_targets(),
+            vec![("s".to_string(), "~/real/shell".to_string())]
+        );
         lc.process_poll("s", &[], 99_999);
         assert!(lc.poll_targets().is_empty());
     }
@@ -1114,7 +1324,6 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         assert!(lc.is_running("j"));
     }
 
-
     // quick re-select after Home (review 3.1 critical)
     #[test]
     fn process_app_reselect_within_the_kill_window_ignores_the_dying_process() {
@@ -1122,7 +1331,13 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         up(&mut lc, "s");
         lc.process_exited("s", 100, 0);
         lc.process_poll("s", &[7], 1_000);
-        assert_eq!(lc.home(true), vec![Step::ActivateLumen, term("s", Some(100), &[50], Some("~/real/shell"))]);
+        assert_eq!(
+            lc.home(true),
+            vec![
+                Step::ActivateLumen,
+                term("s", Some(100), &[50], Some("~/real/shell"))
+            ]
+        );
         lc.retire_pids("s", &[7, 8]);
         assert_eq!(lc.select("s", 2_000), vec![Step::Spawn("s".into())]);
         lc.set_pid("s", 200);
@@ -1145,7 +1360,10 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
     fn app_id_app_reselect_ignores_the_dying_window() {
         let mut lc = Lifecycle::new(vec![spec("k")]);
         up(&mut lc, "k");
-        assert_eq!(lc.home(true), vec![Step::ActivateLumen, term("k", Some(100), &[50], None)]);
+        assert_eq!(
+            lc.home(true),
+            vec![Step::ActivateLumen, term("k", Some(100), &[50], None)]
+        );
         lc.retire_pids("k", &[100]);
         assert_eq!(lc.select("k", 2_000), vec![Step::Spawn("k".into())]);
         lc.set_pid("k", 200);
@@ -1178,10 +1396,20 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         lc.select("a", 0);
         lc.set_pid("a", 100);
         lc.select("j", 1);
-        assert_eq!(lc.home(false), vec![Step::ActivateLumen, term("a", Some(100), &[], None)]);
+        assert_eq!(
+            lc.home(false),
+            vec![Step::ActivateLumen, term("a", Some(100), &[], None)]
+        );
         assert!(!lc.is_running("a"));
-        assert!(lc.is_running("j"), "a launching keep-alive app is left alone");
-        assert_eq!(lc.home(true), vec![], "Lumen active and nothing in front: Home is a no-op");
+        assert!(
+            lc.is_running("j"),
+            "a launching keep-alive app is left alone"
+        );
+        assert_eq!(
+            lc.home(true),
+            vec![],
+            "Lumen active and nothing in front: Home is a no-op"
+        );
     }
 
     // M3.5 hook
@@ -1196,12 +1424,21 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         assert_eq!(
             s.apps,
             vec![
-                AppSnapshot { id: "j".into(), pid: Some(100), windows: vec![50], launching: false },
-                AppSnapshot { id: "p".into(), pid: Some(200), windows: vec![], launching: true },
+                AppSnapshot {
+                    id: "j".into(),
+                    pid: Some(100),
+                    windows: vec![50],
+                    launching: false
+                },
+                AppSnapshot {
+                    id: "p".into(),
+                    pid: Some(200),
+                    windows: vec![],
+                    launching: true
+                },
             ]
         );
     }
-
 
     // --- Job 3.3 gap tests ---
     #[test]
@@ -1215,7 +1452,10 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         let mut lc = Lifecycle::new(vec![keep("j"), excl("s")]);
         up(&mut lc, "j");
         assert_eq!(lc.foreground(), &Foreground::App("j".into()));
-        assert_eq!(lc.select("s", 30), vec![term("j", Some(100), &[50], None), Step::Spawn("s".into())]);
+        assert_eq!(
+            lc.select("s", 30),
+            vec![term("j", Some(100), &[50], None), Step::Spawn("s".into())]
+        );
         assert_eq!(lc.foreground(), &Foreground::Lumen);
     }
 
@@ -1232,16 +1472,27 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
     fn window_from_an_app_that_was_not_launched_is_ignored() {
         let mut lc = Lifecycle::new(vec![spec("a"), keep("j")]);
         assert_eq!(lc.window_opened(&win(7, "a"), 5), vec![], "nothing running");
-        assert_eq!(lc.foreground(), &Foreground::Lumen, "an activated stranger does not take the foreground");
+        assert_eq!(
+            lc.foreground(),
+            &Foreground::Lumen,
+            "an activated stranger does not take the foreground"
+        );
         up(&mut lc, "j");
-        assert_eq!(lc.window_opened(&win(8, "a"), 20), vec![], "a is known but not running");
+        assert_eq!(
+            lc.window_opened(&win(8, "a"), 20),
+            vec![],
+            "a is known but not running"
+        );
         assert_eq!(lc.snapshot().apps.len(), 1);
         assert_eq!(lc.foreground(), &Foreground::App("j".into()));
     }
 
     #[test]
     fn anonymous_app_does_not_steal_a_window_that_belongs_to_another_entry() {
-        let anon = Spec { app_id: None, ..spec("x") };
+        let anon = Spec {
+            app_id: None,
+            ..spec("x")
+        };
         let mut lc = Lifecycle::new(vec![anon, spec("a")]);
         lc.select("x", 0);
         assert_eq!(lc.window_opened(&win(7, "a"), 5), vec![]);
@@ -1256,7 +1507,12 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         assert_eq!(lc.select("j", 500), vec![Step::Spawn("j".into())]);
         assert_eq!(
             lc.snapshot().apps,
-            vec![AppSnapshot { id: "j".into(), pid: None, windows: vec![], launching: true }],
+            vec![AppSnapshot {
+                id: "j".into(),
+                pid: None,
+                windows: vec![],
+                launching: true
+            }],
             "no stale pid or window carried over"
         );
         // the old window id (50) closing late must not end the new run
@@ -1280,21 +1536,46 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
     #[test]
     fn command_line_for_command_url_and_fallback() {
         let browser = "br --kiosk {url}";
-        let cmd = entry("id=\"a\"\nname=\"A\"\nlaunch=\"foo --x  1\"\nfallback_url=\"http://h/it's\"\n");
-        assert_eq!(command_line(&cmd, browser, &|p| p == "foo").unwrap(), "foo --x  1");
-        assert_eq!(command_line(&cmd, browser, &|_| false).unwrap(), "br --kiosk 'http://h/it'\\''s'");
+        let cmd =
+            entry("id=\"a\"\nname=\"A\"\nlaunch=\"foo --x  1\"\nfallback_url=\"http://h/it's\"\n");
+        assert_eq!(
+            command_line(&cmd, browser, &|p| p == "foo").unwrap(),
+            "foo --x  1"
+        );
+        assert_eq!(
+            command_line(&cmd, browser, &|_| false).unwrap(),
+            "br --kiosk 'http://h/it'\\''s'"
+        );
         let no_fb = entry("id=\"a\"\nname=\"A\"\nlaunch=\"foo\"\n");
-        assert!(command_line(&no_fb, browser, &|_| false).unwrap_err().contains("not found"));
+        assert!(command_line(&no_fb, browser, &|_| false)
+            .unwrap_err()
+            .contains("not found"));
         let url = entry("id=\"a\"\nname=\"A\"\ntype=\"url\"\nurl=\"http://x/web\"\n");
-        assert_eq!(command_line(&url, browser, &|_| false).unwrap(), "br --kiosk 'http://x/web'");
-        assert_eq!(command_line(&url, "br", &|_| false).unwrap(), "br 'http://x/web'");
-        assert_eq!(command_line(&url, "br --class=lumen-{id} {url}", &|_| false).unwrap(), "br --class=lumen-a 'http://x/web'");
+        assert_eq!(
+            command_line(&url, browser, &|_| false).unwrap(),
+            "br --kiosk 'http://x/web'"
+        );
+        assert_eq!(
+            command_line(&url, "br", &|_| false).unwrap(),
+            "br 'http://x/web'"
+        );
+        assert_eq!(
+            command_line(&url, "br --class=lumen-{id} {url}", &|_| false).unwrap(),
+            "br --class=lumen-a 'http://x/web'"
+        );
     }
 
     #[test]
     fn parse_stat_handles_odd_comms() {
         let p = parse_stat("1234 (kodi.bin) S 1200 1234 1234 0 -1 4194560 ...").unwrap();
-        assert_eq!(p, Proc { pid: 1234, ppid: 1200, comm: "kodi.bin".into() });
+        assert_eq!(
+            p,
+            Proc {
+                pid: 1234,
+                ppid: 1200,
+                comm: "kodi.bin".into()
+            }
+        );
         let q = parse_stat("77 (Web Content (x)) R 5 77 77 0").unwrap();
         assert_eq!((q.pid, q.ppid, q.comm.as_str()), (77, 5, "Web Content (x)"));
         assert!(parse_stat("garbage").is_none());
@@ -1302,16 +1583,32 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
     }
 
     fn p(pid: u32, ppid: u32) -> Proc {
-        Proc { pid, ppid, comm: "x".into() }
+        Proc {
+            pid,
+            ppid,
+            comm: "x".into(),
+        }
     }
 
     #[test]
     fn descendants_follow_ppid_links() {
-        let table = vec![p(1, 0), p(10, 1), p(11, 10), p(12, 11), p(13, 10), p(20, 1), p(21, 20)];
+        let table = vec![
+            p(1, 0),
+            p(10, 1),
+            p(11, 10),
+            p(12, 11),
+            p(13, 10),
+            p(20, 1),
+            p(21, 20),
+        ];
         let mut d = descendants(10, &table);
         d.sort();
         assert_eq!(d, vec![10, 11, 12, 13]);
-        assert_eq!(descendants(99, &table), vec![99], "a vanished root still comes back alone");
+        assert_eq!(
+            descendants(99, &table),
+            vec![99],
+            "a vanished root still comes back alone"
+        );
         let cyc = vec![p(5, 6), p(6, 5)];
         assert_eq!(descendants(5, &cyc).len(), 2);
     }
@@ -1324,7 +1621,11 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
         assert!(!matches_process(path, None, "shell"));
         assert!(matches_process("chromium", None, "chromium"));
         assert!(!matches_process("chromium", None, "chromium-x"));
-        assert!(matches_process("a-very-long-program-name", None, "a-very-long-pro"));
+        assert!(matches_process(
+            "a-very-long-program-name",
+            None,
+            "a-very-long-pro"
+        ));
         assert_eq!(expand_tilde("~/x/y", "/home/l"), "/home/l/x/y");
         assert_eq!(expand_tilde("~", "/home/l"), "/home/l");
         assert_eq!(expand_tilde("/a/~b", "/home/l"), "/a/~b");
@@ -1334,7 +1635,10 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
     fn spawn_runs_and_reaps() {
         let e = entry("id=\"t\"\nname=\"T\"\nlaunch=\"sh -c 'exit 7'\"\n");
         let (tx, rx) = std::sync::mpsc::channel();
-        let pid = spawn(&e, DEFAULT_BROWSER, move |id, pid, code| tx.send((id, pid, code)).unwrap()).unwrap();
+        let pid = spawn(&e, DEFAULT_BROWSER, move |id, pid, code| {
+            tx.send((id, pid, code)).unwrap()
+        })
+        .unwrap();
         let (id, rpid, code) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!((id.as_str(), rpid, code), ("t", pid, 7));
     }
@@ -1344,8 +1648,14 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
     fn terminate_kills_a_stubborn_child() {
         let e = entry("id=\"t\"\nname=\"T\"\nlaunch=\"sleep 60\"\n");
         let (tx, rx) = std::sync::mpsc::channel();
-        let pid = spawn(&e, DEFAULT_BROWSER, move |_, _, code| tx.send(code).unwrap()).unwrap();
+        let pid = spawn(&e, DEFAULT_BROWSER, move |_, _, code| {
+            tx.send(code).unwrap()
+        })
+        .unwrap();
         terminate(collect_targets(Some(pid), None), Duration::from_millis(50));
-        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), -libc::SIGTERM);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            -libc::SIGTERM
+        );
     }
 }

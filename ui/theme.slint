@@ -4,6 +4,10 @@ export global Theme {
     out property <color> muted: #9aa0ad;
     out property <color> pass: #3ccf6e;
     out property <color> fail: #ff5a5a;
+    // Flat opaque Settings surfaces (no gradients or shadows: fill-rate bound GPU).
+    out property <color> panel: #11141c;
+    out property <color> panel-active: #1c2436;
+    out property <color> focus-bg: #2b3a67;
     // Shared focus easing (CSS cubic-bezier(0.2, 0.8, 0.2, 1) in M1).
     out property <easing> ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 }

@@ -14,9 +14,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 /// The apps built into Lumen.
-pub const SHIPPED: [(&str, &str); 4] = [
+pub const SHIPPED: [(&str, &str); 3] = [
     ("jellyfin.toml", include_str!("../config/apps/jellyfin.toml")),
-    ("plex.toml", include_str!("../config/apps/plex.toml")),
     ("steamlink.toml", include_str!("../config/apps/steamlink.toml")),
     ("kodi.toml", include_str!("../config/apps/kodi.toml")),
 ];
@@ -215,13 +214,12 @@ mod tests {
         let l = load_texts(SHIPPED.iter().map(|(n, t)| (n.to_string(), Ok(t.to_string()))));
         assert!(l.errors.is_empty());
         let ids: Vec<_> = l.entries.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, ["jellyfin", "plex", "steamlink", "kodi"]);
+        assert_eq!(ids, ["jellyfin", "steamlink", "kodi"]);
         let by = |id: &str| l.entries.iter().find(|e| e.id == id).unwrap();
-        assert_eq!(by("plex").kind, Kind::Url);
-        assert_eq!(by("plex").background, Background::KeepAlive);
+        assert_eq!(by("jellyfin").kind, Kind::Url);
+        assert_eq!(by("jellyfin").background, Background::KeepAlive);
         assert!(by("steamlink").exclusive && by("kodi").exclusive);
         assert!(by("steamlink").process.is_some());
-        assert!(by("plex").icon.is_none());
     }
 
     #[test]
@@ -328,12 +326,12 @@ mod tests {
         let dir = temp("seed");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(seed_defaults(&dir).unwrap());
-        assert_eq!(load(&dir).entries.len(), 4);
+        assert_eq!(load(&dir).entries.len(), 3);
         std::fs::write(dir.join("kodi.toml"), "mine").unwrap();
         assert!(!seed_defaults(&dir).unwrap());
         assert_eq!(std::fs::read_to_string(dir.join("kodi.toml")).unwrap(), "mine");
         let l = load(&dir);
-        assert_eq!(l.entries.len(), 3);
+        assert_eq!(l.entries.len(), 2);
         assert_eq!(l.errors.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }

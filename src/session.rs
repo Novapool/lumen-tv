@@ -16,6 +16,7 @@ use slint::{ComponentHandle, Model, Weak};
 
 use crate::apps::{self, Lifecycle, Spec, Step, WindowInfo, LUMEN_APP_ID};
 use crate::platform::{toplevel, Toplevel, WindowEvent, Windows};
+use crate::reclaim::Reclaim;
 use crate::registry::Entry;
 use crate::AppWindow;
 
@@ -39,6 +40,8 @@ struct Ctx {
     seen: HashMap<u64, (String, bool, bool)>,
     /// Retries the fullscreen request while Lumen's window isn't fullscreen.
     fullscreen_timer: slint::Timer,
+    /// Debounce for re-claiming the TV remote after an app exits.
+    reclaim: Reclaim,
 }
 
 thread_local! {
@@ -67,6 +70,7 @@ pub fn start(ui: &AppWindow, entries: Vec<Entry>) -> Arc<AtomicBool> {
             ui: ui.as_weak(),
             seen: HashMap::new(),
             fullscreen_timer: slint::Timer::default(),
+            reclaim: Reclaim::default(),
         })
     });
 
@@ -85,22 +89,22 @@ pub fn start(ui: &AppWindow, entries: Vec<Entry>) -> Arc<AtomicBool> {
         move || targets.lock().map(|t| t.clone()).unwrap_or_default(),
         |id, pids| {
             let _ = slint::invoke_from_event_loop(move || {
-                let steps = with_ctx(|c| {
-                    let now = c.t0.elapsed().as_millis() as u64;
-                    c.lc.process_poll(&id, &pids, now)
-                });
-                run(steps.unwrap_or_default());
+                update_and_run(&id, |lc, now| lc.process_poll(&id, &pids, now));
             });
         },
     );
 
     let weak = ui.as_weak();
     ui.on_launch(move |i| {
-        let Some(id) = weak.upgrade().and_then(|ui| ui.get_apps().row_data(i as usize)).map(|a| a.id.to_string()) else {
+        let Some(id) = weak
+            .upgrade()
+            .and_then(|ui| ui.get_apps().row_data(i as usize))
+            .map(|a| a.id.to_string())
+        else {
             return;
         };
-        if id.is_empty() {
-            return; // Store and Settings do nothing yet (M4, M3.5)
+        if id.is_empty() || id.starts_with("lumen:") {
+            return; // built-in tiles (Store: M4; Settings opens in the UI)
         }
         let steps = with_ctx(|c| {
             let now = c.t0.elapsed().as_millis() as u64;
@@ -109,6 +113,94 @@ pub fn start(ui: &AppWindow, entries: Vec<Entry>) -> Arc<AtomicBool> {
         run(steps.unwrap_or_default());
     });
     lumen_front
+}
+
+/// Claims the TV remote (CEC identity + active source + keymap remap) on a
+/// worker thread, since `cec-ctl` blocks. The result goes to the log and to the
+/// Settings Input panel. `why` is "startup" or "re-claimed". The caller has
+/// marked the claim in flight (`Reclaim::begin`/`poll`); it ends when done.
+fn claim_remote_async(why: &'static str) {
+    use crate::platform::Tv;
+    std::thread::spawn(move || {
+        let r = crate::platform::pi::PiTv::default().claim_remote();
+        let (verb, line) = match &r {
+            Ok(status) => (
+                if why == "startup" {
+                    "claimed at startup"
+                } else {
+                    "re-claimed"
+                },
+                status.clone(),
+            ),
+            Err(e) => (
+                if why == "startup" {
+                    "NOT claimed"
+                } else {
+                    "re-claim FAILED"
+                },
+                e.clone(),
+            ),
+        };
+        let msg = format!("[input] remote {verb}: {line}");
+        if r.is_ok() {
+            println!("{msg}");
+        } else {
+            eprintln!("{msg}");
+        }
+        crate::diag::set_claim(r);
+        let _ = slint::invoke_from_event_loop(|| {
+            with_ctx(|c| c.reclaim.finished());
+            try_reclaim(); // a claim that came due meanwhile
+        });
+    });
+}
+
+/// The claim at startup.
+pub fn claim_remote_at_startup() {
+    with_ctx(|c| c.reclaim.begin(c.t0.elapsed().as_millis() as u64));
+    claim_remote_async("startup");
+}
+
+/// Starts a re-claim if one is due and Lumen is really in front: its window is
+/// active, the planner has Lumen in the foreground and no app is still
+/// launching (an exclusive launch kills the old app while Kodi starts).
+fn try_reclaim() {
+    let fire = with_ctx(|c| {
+        let ready = c.lumen_front.load(Ordering::Relaxed)
+            && c.lc.foreground() == &apps::Foreground::Lumen
+            && !c.lc.snapshot().apps.iter().any(|a| a.launching);
+        c.reclaim.poll(ready, c.t0.elapsed().as_millis() as u64)
+    });
+    if fire == Some(true) {
+        claim_remote_async("re-claimed");
+    }
+}
+
+/// Applies a lifecycle update for `id` and runs its steps. If that made the app
+/// go away, the TV remote may need claiming again: Kodi (libcec) unregisters
+/// the CEC adapter and sends inactive source on exit, so the TV leaves the
+/// Pi's input.
+fn update_and_run(id: &str, update: impl FnOnce(&mut Lifecycle, u64) -> Vec<Step>) {
+    let was_running = with_ctx(|c| c.lc.is_running(id)).unwrap_or(false);
+    let steps = with_ctx(|c| update(&mut c.lc, c.t0.elapsed().as_millis() as u64));
+    run(steps.unwrap_or_default());
+    if was_running && !with_ctx(|c| c.lc.is_running(id)).unwrap_or(true) {
+        with_ctx(|c| c.reclaim.mark_due());
+        try_reclaim();
+    }
+}
+
+/// Read-only view for Settings: the lifecycle snapshot joined with the
+/// compositor's windows. UI thread only. `None` before `start`.
+pub fn running_view() -> Option<crate::diag::RunningView> {
+    with_ctx(|c| {
+        let tops = c
+            .windows
+            .as_ref()
+            .map(|w| w.toplevels())
+            .unwrap_or_default();
+        crate::diag::join_running(&c.lc.snapshot(), &tops)
+    })
 }
 
 /// Home pressed (F1 / Super / HomePage / long Back).
@@ -158,7 +250,11 @@ fn run(steps: Vec<Step>) {
             }
             Step::ActivateLumen => {
                 if let Some(win) = windows() {
-                    match win.toplevels().into_iter().find(|t| t.app_id == LUMEN_APP_ID) {
+                    match win
+                        .toplevels()
+                        .into_iter()
+                        .find(|t| t.app_id == LUMEN_APP_ID)
+                    {
                         Some(t) => log_err("activate lumen", win.activate(t.id)),
                         None => eprintln!("[windows] activate lumen: Lumen's window not found"),
                     }
@@ -170,9 +266,14 @@ fn run(steps: Vec<Step>) {
                     log_err("fullscreen", win.set_fullscreen(w));
                 }
             }
-            Step::Pause { pid, process, .. } => apps::pause_media(apps::collect_targets(pid, process.as_deref())),
+            Step::Pause { pid, process, .. } => {
+                apps::pause_media(apps::collect_targets(pid, process.as_deref()))
+            }
             Step::Terminate(t) => {
-                println!("[apps] terminate {} pid={:?} windows={:?}", t.id, t.pid, t.windows);
+                println!(
+                    "[apps] terminate {} pid={:?} windows={:?}",
+                    t.id, t.pid, t.windows
+                );
                 // Collect before the windows close: the process tree is intact now.
                 let pids = apps::collect_targets(t.pid, t.process.as_deref());
                 with_ctx(|c| c.lc.retire_pids(&t.id, &pids));
@@ -189,15 +290,23 @@ fn run(steps: Vec<Step>) {
 }
 
 fn spawn(id: &str) {
-    let Some((entry, browser)) = with_ctx(|c| (c.entries.iter().find(|e| e.id == id).cloned(), c.browser.clone())) else {
+    let Some((entry, browser)) = with_ctx(|c| {
+        (
+            c.entries.iter().find(|e| e.id == id).cloned(),
+            c.browser.clone(),
+        )
+    }) else {
         return;
     };
     let Some(entry) = entry else { return };
     let res = apps::spawn(&entry, &browser, |id, pid, code| {
         let _ = slint::invoke_from_event_loop(move || {
             println!("[apps] exited {id} pid={pid} code={code}");
-            let steps = with_ctx(|c| c.lc.process_exited(&id, pid, code));
-            run(steps.unwrap_or_default());
+            update_and_run(&id, |lc, _| lc.process_exited(&id, pid, code));
+            // Home or an exclusive launch has already dropped a terminated app
+            // from the running set, so `update_and_run` can't see this exit.
+            with_ctx(|c| c.reclaim.mark_due());
+            try_reclaim();
         });
     });
     match res {
@@ -235,13 +344,20 @@ fn sync_tiles() {
 }
 
 fn info(t: &Toplevel) -> WindowInfo {
-    WindowInfo { id: t.id, app_id: t.app_id.clone(), activated: t.activated, fullscreen: t.fullscreen }
+    WindowInfo {
+        id: t.id,
+        app_id: t.app_id.clone(),
+        activated: t.activated,
+        fullscreen: t.fullscreen,
+    }
 }
 
 /// Timer tick: ask again until Lumen's window is fullscreen or the time is up.
 fn fullscreen_retry(started: Instant) {
-    let lumen = windows().and_then(|w| w.toplevels().into_iter().find(|t| t.app_id == LUMEN_APP_ID));
-    let done = lumen.as_ref().is_none_or(|t| t.fullscreen) || started.elapsed() >= FULLSCREEN_RETRY_FOR;
+    let lumen =
+        windows().and_then(|w| w.toplevels().into_iter().find(|t| t.app_id == LUMEN_APP_ID));
+    let done =
+        lumen.as_ref().is_none_or(|t| t.fullscreen) || started.elapsed() >= FULLSCREEN_RETRY_FOR;
     if done {
         with_ctx(|c| c.fullscreen_timer.stop());
     }
@@ -256,11 +372,15 @@ fn window_event(ev: WindowEvent) {
     let steps = match ev {
         WindowEvent::Opened(t) | WindowEvent::Changed(t) => {
             let mut fullscreen_lumen = None;
+            let lumen_active = t.app_id == LUMEN_APP_ID && t.activated;
             let steps = with_ctx(|c| {
                 let now = (t.app_id.clone(), t.activated, t.fullscreen);
                 if c.seen.insert(t.id, now.clone()) != Some(now) {
                     let what = if opened { "opened" } else { "changed" };
-                    println!("[windows] {what} {:?} id={} activated={} fullscreen={}", t.app_id, t.id, t.activated, t.fullscreen);
+                    println!(
+                        "[windows] {what} {:?} id={} activated={} fullscreen={}",
+                        t.app_id, t.id, t.activated, t.fullscreen
+                    );
                 }
                 if t.app_id == LUMEN_APP_ID {
                     c.lumen_front.store(t.activated, Ordering::Relaxed);
@@ -269,9 +389,11 @@ fn window_event(ev: WindowEvent) {
                     } else if !c.fullscreen_timer.running() {
                         fullscreen_lumen = Some(t.id);
                         let started = Instant::now();
-                        c.fullscreen_timer.start(slint::TimerMode::Repeated, Duration::from_secs(1), move || {
-                            fullscreen_retry(started)
-                        });
+                        c.fullscreen_timer.start(
+                            slint::TimerMode::Repeated,
+                            Duration::from_secs(1),
+                            move || fullscreen_retry(started),
+                        );
                     }
                 }
                 let now_ms = c.t0.elapsed().as_millis() as u64;
@@ -281,6 +403,9 @@ fn window_event(ev: WindowEvent) {
                     c.lc.window_changed(&info(&t), now_ms)
                 }
             });
+            if lumen_active {
+                try_reclaim();
+            }
             // The window can come up before the output is ready (tiny, top
             // left, not fullscreen). Ask for fullscreen; the size change then
             // re-bakes the tiles through `changed rem`.

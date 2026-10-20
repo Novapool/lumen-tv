@@ -16,7 +16,25 @@ mod devices;
 #[cfg(target_os = "linux")]
 pub use devices::start;
 
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
 use serde::Deserialize;
+
+/// What Settings shows about one open input device.
+#[derive(Clone, Debug)]
+pub struct DeviceStatus {
+    pub path: String,
+    pub name: String,
+    /// The mapping file in use, or `None` when no mapping matched (ignored).
+    pub mapping: Option<String>,
+    pub last_action: Option<(Action, Instant)>,
+    /// Last raw key name, recorded only while input debug is on.
+    pub last_raw: Option<(String, Instant)>,
+}
+
+/// Shared between the input thread (writer) and the Settings feed (reader).
+pub type Status = Arc<Mutex<Vec<DeviceStatus>>>;
 
 /// The normalized events the UI understands (BRIEF §4).
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]

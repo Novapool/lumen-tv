@@ -1,7 +1,8 @@
 # Kodi with its built-in Wayland windowing.
 id = "kodi"
 name = "Kodi"
-launch = "kodi --windowing=wayland"
+# ~/.local/bin/kodi-tile (config/kodi-tile): Kodi on its own home with CEC off, see the script.
+launch = "~/.local/bin/kodi-tile"
 background = "close-on-exit"
 exclusive = true
 app_id = "Kodi"

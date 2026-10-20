@@ -1,0 +1,42 @@
+#!/bin/sh
+# Starts Kodi for the Lumen Kodi tile with its CEC peripheral switched off.
+# Kodi's libcec otherwise takes the TV remote from Lumen and, on exit, tells
+# the TV to leave the Pi's input. The boot Kodi (kodi.service, ~/.kodi) is
+# never touched: this one runs from its own home, ~/.kodi-tile (KODI_DATA is
+# what kodi's launcher maps to special://home/), which links back to the
+# shared addons and userdata. Only peripheral_data and temp are its own.
+set -e
+HOME_SRC="$HOME/.kodi"
+TILE="$HOME/.kodi-tile"
+mkdir -p "$TILE/userdata/peripheral_data" "$TILE/temp"
+# Link $1 at $2 unless something (a file, or any link, even a dangling one) is there.
+link() { [ -e "$2" ] || [ -L "$2" ] || ln -s "$1" "$2"; }
+# Drop links into ~/.kodi whose target was deleted there.
+for l in "$TILE"/* "$TILE"/userdata/* "$TILE"/userdata/peripheral_data/*; do
+    if [ -L "$l" ] && [ ! -e "$l" ]; then
+        case "$(readlink "$l")" in "$HOME_SRC"/*) rm -f "$l" ;; esac
+    fi
+done
+for d in addons media saves system; do
+    [ -e "$HOME_SRC/$d" ] && link "$HOME_SRC/$d" "$TILE/$d"
+done
+for f in "$HOME_SRC"/userdata/*; do
+    [ -e "$f" ] || continue
+    n=$(basename "$f")
+    case "$n" in peripheral_data) continue ;; esac
+    link "$f" "$TILE/userdata/$n"
+done
+# Other peripherals keep the boot Kodi's settings; CEC is forced off each launch.
+for f in "$HOME_SRC"/userdata/peripheral_data/*.xml; do
+    [ -e "$f" ] || continue
+    n=$(basename "$f")
+    case "$n" in cec_*) continue ;; esac
+    link "$f" "$TILE/userdata/peripheral_data/$n"
+done
+cat > "$TILE/userdata/peripheral_data/cec_CEC_Adapter.xml" <<'XML'
+<settings>
+    <setting id="enabled" value="0"/>
+</settings>
+XML
+export KODI_DATA="$TILE"
+exec kodi --windowing=wayland "$@"

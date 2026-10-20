@@ -10,8 +10,10 @@ pub mod toplevel;
 /// The TV the box is plugged into.
 pub trait Tv {
     /// Registers with the TV over HDMI-CEC so its remote's buttons reach the
-    /// box, and switches the TV to this input.
-    fn claim_remote(&self) -> Result<(), String>;
+    /// box, switches the TV to this input and remaps the remote's keys for
+    /// apps. Returns a one-line status (identity, remap result, time) for
+    /// Settings; a failed remap is reported in the status, not as an error.
+    fn claim_remote(&self) -> Result<String, String>;
 }
 
 /// One top-level window of any app, as the compositor reports it.

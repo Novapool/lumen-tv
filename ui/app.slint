@@ -5,6 +5,9 @@
 
 import { Theme } from "theme.slint";
 import { App, Tile } from "tile.slint";
+import { DiagPanel, DiagRow, SettingsScreen } from "settings.slint";
+
+export { DiagPanel, DiagRow }
 
 // The normalized input events (Rust: input::Action).
 export enum NavEvent { up, down, left, right, select, back, home, menu, play-pause }
@@ -30,6 +33,17 @@ export component AppWindow inherits Window {
     callback launch(int); // select on the tile at this index
     callback bench();
     callback quit();
+
+    // Settings contract (Rust feeds diag-panels, see src/diag.rs).
+    in-out property <bool> settings-open: false;
+    in property <[DiagPanel]> diag-panels: [];
+    in property <bool> input-debug-on: false;
+    callback settings-changed(bool);
+    callback toggle-input-debug();
+    // Settings navigation state: level 0 = panel list, 1 = rows of `s-panel`.
+    property <int> s-level: 0;
+    property <int> s-panel: 0;
+    property <int> s-row: 0;
 
     property <length> rem: self.width / 120;
     property <length> safe-x: 6 * root.rem;
@@ -80,8 +94,55 @@ export component AppWindow inherits Window {
         return true;
     }
 
+    function close-settings() {
+        root.settings-open = false;
+        root.settings-changed(false);
+    }
+
+    // Rows in a panel; the Toggles panel (always last, built by the UI) has 2.
+    function settings-rows(p: int) -> int {
+        return p >= root.diag-panels.length ? 2 : root.diag-panels[p].rows.length;
+    }
+
+    function settings-nav(e: NavEvent) {
+        if (e == NavEvent.home) {
+            root.close-settings();
+        } else if (root.s-level == 0) {
+            if (e == NavEvent.back) {
+                root.close-settings();
+            } else if (e == NavEvent.up) {
+                root.s-panel = max(0, root.s-panel - 1);
+            } else if (e == NavEvent.down) {
+                root.s-panel = min(root.diag-panels.length, root.s-panel + 1);
+            } else if ((e == NavEvent.right || e == NavEvent.select) && root.settings-rows(root.s-panel) > 0) {
+                root.s-level = 1;
+                // Log: newest line is last, start there. Others: first row.
+                root.s-row = root.diag-panels[root.s-panel].title == "Log" ? root.settings-rows(root.s-panel) - 1 : 0;
+            }
+        } else {
+            if (e == NavEvent.back || e == NavEvent.left) {
+                root.s-level = 0;
+            } else if (e == NavEvent.up) {
+                root.s-row = max(0, root.s-row - 1);
+            } else if (e == NavEvent.down) {
+                root.s-row = max(0, min(root.settings-rows(root.s-panel) - 1, root.s-row + 1));
+            } else if (e == NavEvent.select && root.s-panel >= root.diag-panels.length) {
+                if (root.s-row == 0) {
+                    root.toggle-input-debug();
+                } else {
+                    root.close-settings();
+                    root.bench();
+                }
+            }
+        }
+    }
+
     public function nav(e: NavEvent) {
         if (root.input-locked) {
+            return;
+        }
+        if (root.settings-open) {
+            root.settings-nav(e);
             return;
         }
         if (e == NavEvent.right) {
@@ -90,7 +151,15 @@ export component AppWindow inherits Window {
             root.move(-1);
         } else if (e == NavEvent.select) {
             root.press();
-            root.launch(root.focused);
+            if (root.apps[root.focused].id == "lumen:settings") {
+                root.s-level = 0;
+                root.s-panel = 0;
+                root.s-row = 0;
+                root.settings-open = true;
+                root.settings-changed(true);
+            } else {
+                root.launch(root.focused);
+            }
         } else if (e == NavEvent.home && root.focused != 0) {
             root.move(-root.focused);
         }
@@ -143,6 +212,7 @@ export component AppWindow inherits Window {
     // and fades are baked into one opaque image (src/bake.rs), so at rest this
     // is a single layer: the GPU is fill-rate bound at 4K.
     Rectangle {
+        visible: !root.settings-open;
         x: 0;
         y: 0;
         width: root.width;
@@ -157,6 +227,7 @@ export component AppWindow inherits Window {
     }
 
     Text {
+        visible: !root.settings-open;
         x: root.safe-x;
         y: root.safe-y;
         text: "Lumen";
@@ -166,6 +237,7 @@ export component AppWindow inherits Window {
     }
 
     Text {
+        visible: !root.settings-open;
         x: root.width - root.safe-x - self.width;
         y: root.safe-y;
         text: root.clock;
@@ -175,6 +247,7 @@ export component AppWindow inherits Window {
     }
 
     if root.perf-text != "": VerticalLayout {
+        visible: !root.settings-open;
         x: root.width - root.safe-x - self.width;
         y: root.safe-y + 3.5 * root.rem;
         spacing: 0.3 * root.rem;
@@ -196,6 +269,7 @@ export component AppWindow inherits Window {
     }
 
     Text {
+        visible: !root.settings-open;
         x: root.safe-x;
         y: 14 * root.rem;
         text: root.apps[root.focused].name;
@@ -207,6 +281,7 @@ export component AppWindow inherits Window {
 
     // tile row, 22rem pitch
     Rectangle {
+        visible: !root.settings-open;
         x: root.safe-x - root.row-offset;
         y: 35 * root.rem;
         width: root.apps.length * 22 * root.rem;
@@ -221,6 +296,19 @@ export component AppWindow inherits Window {
             pressed: root.pressed && i == root.focused;
             shadow: root.tile-shadow;
         }
+    }
+
+    if root.settings-open: SettingsScreen {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        panels: root.diag-panels;
+        rem: root.rem;
+        input-debug-on: root.input-debug-on;
+        level: root.s-level;
+        sel-panel: root.s-panel;
+        sel-row: root.s-row;
     }
 
     if root.input-debug != "": Rectangle {

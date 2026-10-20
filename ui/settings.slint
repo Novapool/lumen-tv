@@ -1,0 +1,137 @@
+// Settings/diagnostics screen: panel list on the left, the focused panel's
+// rows on the right. Pure view: the navigation state (level, panel, row) lives
+// on AppWindow, which moves it in nav(). The struct names are a contract with
+// the Rust data feed (src/diag.rs). Flat opaque fills only (Slint rules).
+
+import { Theme } from "theme.slint";
+
+export struct DiagRow {
+    text: string,
+    detail: string,
+    level: int, // -1 error, 0 normal, 1 good
+}
+
+export struct DiagPanel {
+    title: string,
+    rows: [DiagRow],
+}
+
+export component SettingsScreen inherits Rectangle {
+    in property <[DiagPanel]> panels: [];
+    in property <length> rem: 16px;
+    in property <bool> input-debug-on: false;
+    in property <int> level: 0; // 0 panel list, 1 rows
+    in property <int> sel-panel: 0;
+    in property <int> sel-row: 0;
+
+    // The Toggles panel is built here and always comes last.
+    property <int> toggles-index: root.panels.length;
+    property <bool> on-toggles: root.sel-panel == root.toggles-index;
+    property <[DiagRow]> shown-rows: root.on-toggles ? [
+        { text: "Input debug", detail: root.input-debug-on ? "On" : "Off", level: root.input-debug-on ? 1 : 0 },
+        { text: "Run benchmark", detail: "Select to start", level: 0 },
+    ] : root.panels[root.sel-panel].rows;
+    property <bool> on-log: !root.on-toggles && root.panels[root.sel-panel].title == "Log";
+    property <length> row-h: 3.2 * root.rem;
+    property <length> view-h: root.height - 12.4 * root.rem;
+    property <length> content-h: root.shown-rows.length * root.row-h;
+    property <length> max-scroll: max(0px, root.content-h - root.view-h);
+    property <int> row-shown: max(0, min(root.sel-row, root.shown-rows.length - 1));
+
+    background: Theme.bg;
+
+    Text {
+        x: 6 * root.rem;
+        y: 3.4 * root.rem;
+        text: "Settings";
+        font-size: 2 * root.rem;
+        font-weight: 750;
+        color: Theme.text;
+    }
+
+    Text {
+        x: root.width - 6 * root.rem - self.width;
+        y: 3.9 * root.rem;
+        text: root.level == 0 ? "Right/Select: open   Back: close" : "Up/Down: move   Back: panels";
+        font-size: 1.2 * root.rem;
+        color: Theme.muted;
+        horizontal-alignment: right;
+    }
+
+    // Left column: the panels.
+    for i in root.panels.length + 1: Rectangle {
+        x: 6 * root.rem;
+        y: 9 * root.rem + i * 4.4 * root.rem;
+        width: 24 * root.rem;
+        height: 4 * root.rem;
+        border-radius: 0.6 * root.rem;
+        background: i == root.sel-panel ? (root.level == 0 ? Theme.focus-bg : Theme.panel-active) : Theme.panel;
+        border-width: i == root.sel-panel && root.level == 0 ? 0.18 * root.rem : 0px;
+        border-color: Theme.text;
+
+        Text {
+            x: 1.6 * root.rem;
+            width: parent.width - 3.2 * root.rem;
+            height: parent.height;
+            text: i == root.toggles-index ? "Toggles" : root.panels[i].title;
+            font-size: 1.6 * root.rem;
+            font-weight: i == root.sel-panel ? 700 : 500;
+            color: i == root.sel-panel ? Theme.text : Theme.muted;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // Right: the focused panel's rows, clipped to the view.
+    Rectangle {
+        x: 32 * root.rem;
+        y: 9 * root.rem;
+        width: root.width - 32 * root.rem - 6 * root.rem;
+        height: root.view-h;
+        background: Theme.panel;
+        border-radius: 0.6 * root.rem;
+        clip: true;
+
+        Flickable {
+            interactive: false;
+            content-width: self.width;
+            content-height: max(root.content-h, root.view-h);
+            content-y: -min(root.max-scroll, max(0px, root.level == 0
+                ? (root.on-log ? root.max-scroll : 0px)
+                : root.row-shown * root.row-h + root.row-h / 2 - root.view-h / 2));
+
+            for r[j] in root.shown-rows: Rectangle {
+                x: 0;
+                y: j * root.row-h;
+                width: parent.width;
+                height: root.row-h;
+                background: root.level == 1 && j == root.row-shown ? Theme.focus-bg : transparent;
+                border-width: root.level == 1 && j == root.row-shown ? 0.18 * root.rem : 0px;
+                border-color: Theme.text;
+
+                Text {
+                    x: 1.6 * root.rem;
+                    width: parent.width - 3.2 * root.rem - (r.detail == "" ? 0px : 22 * root.rem);
+                    height: parent.height;
+                    text: r.text;
+                    font-size: root.on-log ? 1.2 * root.rem : 1.5 * root.rem;
+                    color: r.level == -1 ? Theme.fail : r.level == 1 ? Theme.pass : Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                if r.detail != "": Text {
+                    x: parent.width - 1.6 * root.rem - self.width;
+                    width: 20 * root.rem;
+                    height: parent.height;
+                    text: r.detail;
+                    font-size: 1.4 * root.rem;
+                    color: r.level == -1 ? Theme.fail : r.level == 1 ? Theme.pass : Theme.muted;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}

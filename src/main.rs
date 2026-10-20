@@ -6,6 +6,11 @@
 mod apps;
 mod bench;
 mod bake;
+mod diag;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod logtail;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod reclaim;
 mod registry;
 mod icons;
 // Input and platform code runs on the Pi (Linux) only; elsewhere, e.g. UI
@@ -17,10 +22,13 @@ mod platform;
 #[cfg(target_os = "linux")]
 mod session;
 
+use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use slint::{ComponentHandle, Model, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 slint::include_modules!();
 
@@ -91,9 +99,12 @@ fn build_apps() -> (Vec<registry::Entry>, Vec<App>, Home) {
         tints.push(tile_tint(e.colors.as_deref()));
         statuses.push(status);
     }
-    for (name, glyph, c0, c1) in [("Store", "+", "#003b3b", "#19c3b0"), ("Settings", "⚙", "#24262c", "#6b707c")] {
+    for (id, name, glyph, c0, c1) in [
+        ("lumen:store", "Store", "+", "#003b3b", "#19c3b0"),
+        ("lumen:settings", "Settings", "⚙", "#24262c", "#6b707c"),
+    ] {
         apps.push(App {
-            id: "".into(),
+            id: id.into(),
             running: false,
             name: name.into(),
             glyph: glyph.into(),
@@ -126,7 +137,145 @@ fn bake_tiles(ui: &AppWindow, rem: f32, home: &Home) {
     println!("[bake] tiles at {rem} px/rem in {} ms", t.elapsed().as_millis());
 }
 
+/// Panels as the Slint model rows: the outer model is created once, and an
+/// update only touches the rows that changed, so the open screen keeps its
+/// scroll position and focus across the 1 s refresh.
+#[derive(Default)]
+struct Feed {
+    last: Vec<diag::Panel>,
+    outer: Rc<VecModel<DiagPanel>>,
+    inner: Vec<Rc<VecModel<DiagRow>>>,
+}
+
+fn slint_row(r: &diag::Row) -> DiagRow {
+    DiagRow { text: r.text.as_str().into(), detail: r.detail.as_str().into(), level: r.level }
+}
+
+impl Feed {
+    fn apply(&mut self, ui: &AppWindow, panels: Vec<diag::Panel>) {
+        let same_shape = self.last.len() == panels.len() && self.last.iter().zip(&panels).all(|(a, b)| a.title == b.title);
+        if !same_shape {
+            self.inner = panels.iter().map(|p| Rc::new(VecModel::from(p.rows.iter().map(slint_row).collect::<Vec<_>>()))).collect();
+            let rows: Vec<DiagPanel> = panels
+                .iter()
+                .zip(&self.inner)
+                .map(|(p, m)| DiagPanel { title: SharedString::from(p.title), rows: ModelRc::from(m.clone()) })
+                .collect();
+            self.outer.set_vec(rows);
+            ui.set_diag_panels(ModelRc::from(self.outer.clone()));
+        } else {
+            for (i, p) in panels.iter().enumerate() {
+                if self.last[i] == *p {
+                    continue;
+                }
+                let model = &self.inner[i];
+                if model.row_count() == p.rows.len() {
+                    for (j, r) in p.rows.iter().enumerate() {
+                        if self.last[i].rows.get(j) != Some(r) {
+                            model.set_row_data(j, slint_row(r));
+                        }
+                    }
+                } else {
+                    model.set_vec(p.rows.iter().map(slint_row).collect::<Vec<_>>());
+                }
+            }
+        }
+        self.last = panels;
+    }
+}
+
+/// Everything Settings reads, gathered on the UI thread.
+struct Sources {
+    home: Rc<Home>,
+    bench: Rc<bench::Bench>,
+    status: input::Status,
+    debug: Arc<AtomicBool>,
+    randr: diag::SharedRandr,
+}
+
+impl Sources {
+    fn running(&self) -> Option<diag::RunningView> {
+        #[cfg(target_os = "linux")]
+        return session::running_view();
+        #[cfg(not(target_os = "linux"))]
+        None
+    }
+
+    fn panels(&self, ui: &AppWindow) -> Vec<diag::Panel> {
+        let size = ui.window().size();
+        let randr = self.randr.lock().map(|r| r.clone()).unwrap_or_default();
+        let mode = std::env::var("LUMEN_MODE").ok();
+        let perf = self.bench.perf_view();
+        let devices = self.status.lock().map(|d| d.clone()).unwrap_or_default();
+        let apps = ui.get_apps();
+        let icons: Vec<(String, &Option<icons::IconStatus>)> =
+            (0..apps.row_count()).filter_map(|i| Some((apps.row_data(i)?.id.to_string(), self.home.icons.get(i)?))).collect();
+        vec![
+            diag::display_panel(&diag::DisplayIn {
+                randr: &randr,
+                window: (size.width, size.height, ui.window().scale_factor()),
+                lumen_mode: mode.as_deref(),
+                perf: &perf,
+            }),
+            diag::input_panel(&devices, cfg!(target_os = "linux"), self.debug.load(Ordering::Relaxed), diag::claim_status().as_ref(), Instant::now()),
+            diag::apps_panel(&self.home.errors, &icons),
+            diag::running_panel(self.running().as_ref()),
+            diag::log_panel(&logtail::tail(logtail::KEEP)),
+        ]
+    }
+}
+
+/// Settings feed: refresh `diag-panels` every second while the screen is open
+/// (no timer while closed) and wire the input-debug toggle.
+fn wire_settings(ui: &AppWindow, src: Sources) {
+    ui.set_input_debug_on(src.debug.load(Ordering::Relaxed));
+    let src = Rc::new(src);
+    let feed = Rc::new(RefCell::new(Feed::default()));
+    let timer = Rc::new(Timer::default());
+
+    let refresh = {
+        let (src, feed, weak) = (src.clone(), feed.clone(), ui.as_weak());
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                feed.borrow_mut().apply(&ui, src.panels(&ui));
+            }
+        }
+    };
+
+    let (s, t, r) = (src.clone(), timer.clone(), refresh.clone());
+    ui.on_settings_changed(move |open| {
+        if !open {
+            t.stop();
+            println!("[settings] closed");
+            return;
+        }
+        diag::refresh_randr(&s.randr);
+        r();
+        let running = s.running().map_or(0, |v| v.apps.len());
+        let devices = s.status.lock().map_or(0, |d| d.len());
+        println!("[settings] open: {devices} devices, {} registry errors, {running} running", s.home.errors.len());
+        let r = r.clone();
+        t.start(TimerMode::Repeated, Duration::from_secs(1), r);
+    });
+
+    let (weak, s, r) = (ui.as_weak(), src, refresh);
+    ui.on_toggle_input_debug(move || {
+        let on = !s.debug.fetch_xor(true, Ordering::Relaxed);
+        println!("[settings] input debug {}", if on { "on" } else { "off" });
+        if let Some(ui) = weak.upgrade() {
+            ui.set_input_debug_on(on);
+            if !on {
+                ui.set_input_debug("".into());
+            }
+            if ui.get_settings_open() {
+                r();
+            }
+        }
+    });
+}
+
 fn main() -> Result<(), slint::PlatformError> {
+    logtail::install();
     // The compositor tells windows apart by app_id: this is how Lumen finds
     // its own window among the apps' (apps::LUMEN_APP_ID).
     // (set_xdg_app_id needs the platform to exist first, hence select().)
@@ -139,10 +288,10 @@ fn main() -> Result<(), slint::PlatformError> {
     let home = Rc::new(home);
     bake_heroes(&ui, &home);
     ui.on_blend(bake::blend);
-    let weak = ui.as_weak();
+    let (weak, rebake_home) = (ui.as_weak(), home.clone());
     ui.on_rebake_tiles(move |rem| {
         if let Some(ui) = weak.upgrade() {
-            bake_tiles(&ui, rem, &home);
+            bake_tiles(&ui, rem, &rebake_home);
         }
     });
     ui.set_clock(time_now().into());
@@ -172,10 +321,15 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
 
+    // The input layer fills `input_status`; the toggle flips `input_debug`
+    // (LUMEN_INPUT_DEBUG=1 is only its starting value).
+    let input_status = input::Status::default();
+    let input_debug = Arc::new(AtomicBool::new(std::env::var("LUMEN_INPUT_DEBUG").is_ok_and(|v| v == "1")));
+
     #[cfg(target_os = "linux")]
     {
         let front = session::start(&ui, entries);
-        start_input(&ui, front);
+        start_input(&ui, front, input_status.clone(), input_debug.clone());
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -188,6 +342,10 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     let bench = bench::Bench::attach(&ui);
+    wire_settings(
+        &ui,
+        Sources { home, bench: bench.clone(), status: input_status, debug: input_debug, randr: Default::default() },
+    );
     let weak = ui.as_weak();
     let b = bench.clone();
     ui.on_bench(move || {
@@ -207,26 +365,21 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    ui.run()
+    let result = ui.run();
+    logtail::shutdown();
+    result
 }
 
 /// Starts the evdev input layer and the TV remote, and hands navigation to them.
 #[cfg(target_os = "linux")]
-fn start_input(ui: &AppWindow, front: std::sync::Arc<std::sync::atomic::AtomicBool>) {
-    use std::sync::atomic::Ordering;
-
+fn start_input(ui: &AppWindow, front: Arc<AtomicBool>, status: input::Status, debug: Arc<AtomicBool>) {
     use input::Action;
-    use platform::Tv;
 
-    std::thread::spawn(|| {
-        if let Err(e) = platform::pi::PiTv::default().claim_remote() {
-            eprintln!("[input] TV remote not claimed: {e}");
-        }
-    });
+    session::claim_remote_at_startup();
 
-    let debug = std::env::var("LUMEN_INPUT_DEBUG").is_ok_and(|v| v == "1");
     let weak = ui.as_weak();
-    input::start(move |action, device| {
+    input::start(status, debug.clone(), move |action, device| {
+        let debug = debug.load(Ordering::Relaxed);
         // While an app is in front only Home is Lumen's: the app gets the rest.
         let lumen_front = front.load(Ordering::Relaxed);
         if !lumen_front && action != Action::Home {
