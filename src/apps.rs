@@ -627,6 +627,26 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
         .unwrap_or(-1)
 }
 
+/// Clears the ambient capabilities a child would inherit. lumen-test's PAM
+/// session (systemd 257) gives labwc and Lumen CAP_WAKE_ALARM as an ambient
+/// capability, and bubblewrap refuses to run with any capability it didn't get
+/// from setuid ("Unexpected capabilities but not setuid"), so every Flatpak app
+/// failed to start from Lumen. Apps never need it.
+pub fn drop_ambient_caps(cmd: &mut Command) {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            // Async-signal-safe: a single prctl. EINVAL on kernels without
+            // ambient caps means there is nothing to clear.
+            libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
+            Ok(())
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = cmd;
+}
+
 /// Starts the app as `sh -c 'exec ...'` in its own process group, with
 /// stdout/stderr on the journal (the originals saved by `logtail`) and Lumen's session environment. A
 /// reaper thread calls `on_exit(id, pid, code)` when the launcher exits.
@@ -638,15 +658,15 @@ pub fn spawn(
     use std::os::unix::process::CommandExt;
     let line = command_line(entry, browser_cmd, &program_on_path)?;
     let (out, err) = crate::logtail::child_stdio();
-    let mut child = Command::new("sh")
-        .arg("-c")
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
         .arg(format!("exec {line}"))
         .stdin(Stdio::null())
         .stdout(out)
         .stderr(err)
-        .process_group(0)
-        .spawn()
-        .map_err(|e| format!("spawn failed: {e}"))?;
+        .process_group(0);
+    drop_ambient_caps(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
     let pid = child.id();
     let id = entry.id.clone();
     std::thread::spawn(move || {

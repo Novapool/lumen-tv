@@ -527,6 +527,7 @@ fn run_step(step: &str, limits: Limits, on_event: &dyn Fn(JobEvent)) -> Result<(
         .stderr(writer);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    crate::apps::drop_ambient_caps(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     drop(cmd); // closes the parent's copies of the write end, so EOF can arrive
     let pgid = child.id();
