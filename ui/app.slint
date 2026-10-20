@@ -6,8 +6,10 @@
 import { Theme } from "theme.slint";
 import { App, Tile } from "tile.slint";
 import { DiagPanel, DiagRow, SettingsScreen } from "settings.slint";
+import { StoreItem, StoreJob, StoreScreen } from "store.slint";
+import { DetailsScreen } from "details.slint";
 
-export { DiagPanel, DiagRow }
+export { DiagPanel, DiagRow, StoreItem, StoreJob }
 
 // The normalized input events (Rust: input::Action).
 export enum NavEvent { up, down, left, right, select, back, home, menu, play-pause }
@@ -45,6 +47,27 @@ export component AppWindow inherits Window {
     property <int> s-panel: 0;
     property <int> s-row: 0;
 
+    // Store contract (Rust feeds these, see src/store.rs). Navigation state:
+    // st-level 0 list, 1 details, 2 confirm, 3 progress.
+    in-out property <bool> store-open: false;
+    in property <int> store-state: 0; // 0 loading, 1 ready, -1 error
+    in property <string> store-message: "";
+    in property <string> store-source: "";
+    in property <[StoreItem]> store-items: [];
+    in property <StoreJob> store-job;
+    callback store-changed(bool);
+    callback store-reload();
+    callback store-run(string, string); // (id, action); only from the confirm screen
+    callback store-dismiss();
+    property <int> st-level: 0;
+    property <int> st-row: 0;
+    property <int> st-btn: 0;
+    property <int> st-last-row: max(0, root.store-items.length - 1);
+    // The item shown on Details/Confirm, copied when Details opens: a job that
+    // finishes meanwhile and reloads `store-items` can't change what Run does.
+    property <StoreItem> st-item;
+    property <int> st-scroll: 0; // Details/Confirm scroll steps
+
     property <length> rem: self.width / 120;
     property <length> safe-x: 6 * root.rem;
     property <length> safe-y: 3.4 * root.rem;
@@ -65,6 +88,16 @@ export component AppWindow inherits Window {
     property <float> weight-b: root.hero-front == 1 ? 1 : 0;
     animate weight-a, weight-b { duration: 600ms; easing: ease; }
     pure callback blend(image, image, float) -> image; // (a, b, share of b)
+
+    // After the model is replaced (store reload) the visible backdrop would
+    // keep the old tile's image until the next focus move.
+    changed apps => {
+        if (root.hero-front == 0) {
+            root.hero-a = root.apps[root.focused].hero;
+        } else {
+            root.hero-b = root.apps[root.focused].hero;
+        }
+    }
 
     // Tile faces and the shared shadow are baked for the current size (main.rs).
     in property <image> tile-shadow;
@@ -97,6 +130,93 @@ export component AppWindow inherits Window {
     function close-settings() {
         root.settings-open = false;
         root.settings-changed(false);
+    }
+
+    function close-store() {
+        root.store-open = false;
+        root.store-changed(false);
+    }
+
+    function store-nav(e: NavEvent) {
+        if (e == NavEvent.home) {
+            root.close-store();
+            return;
+        }
+        if (root.st-level == 0) {
+            if (e == NavEvent.back) {
+                root.close-store();
+            } else if (root.store-state == -1) {
+                if (e == NavEvent.select) {
+                    root.store-reload();
+                }
+            } else if (root.store-state == 1 && root.store-items.length > 0) {
+                if (e == NavEvent.up) {
+                    root.st-row = max(0, min(root.st-last-row, root.st-row) - 1);
+                } else if (e == NavEvent.down) {
+                    root.st-row = max(0, min(root.st-last-row, root.st-row + 1));
+                } else if (e == NavEvent.right || e == NavEvent.select) {
+                    root.st-row = max(0, min(root.st-last-row, root.st-row));
+                    root.st-item = root.store-items[root.st-row];
+                    root.st-level = 1;
+                    root.st-btn = 0;
+                    root.st-scroll = 0;
+                }
+            }
+        } else if (root.st-level == 1) {
+            // [action, Back]; needs-root apps only have [Back].
+            if (e == NavEvent.back) {
+                root.st-level = 0;
+            } else if (e == NavEvent.up) {
+                root.st-scroll = max(0, root.st-scroll - 1);
+            } else if (e == NavEvent.down) {
+                root.st-scroll += 1; // DetailsScreen clamps it
+            } else if (e == NavEvent.left || e == NavEvent.right) {
+                if (!root.st-item.needs-root) {
+                    root.st-btn = e == NavEvent.left ? 0 : 1;
+                }
+            } else if (e == NavEvent.select) {
+                if (root.st-item.needs-root || root.st-btn == 1) {
+                    root.st-level = 0;
+                } else {
+                    root.st-level = 2;
+                    root.st-btn = 0;
+                    root.st-scroll = 0;
+                }
+            }
+        } else if (root.st-level == 2) {
+            // [Cancel, Run]; Cancel is focused by default.
+            if (e == NavEvent.back) {
+                root.st-level = 1;
+                root.st-btn = 0;
+                root.st-scroll = 0;
+            } else if (e == NavEvent.up) {
+                root.st-scroll = max(0, root.st-scroll - 1);
+            } else if (e == NavEvent.down) {
+                root.st-scroll += 1;
+            } else if (e == NavEvent.left) {
+                root.st-btn = 0;
+            } else if (e == NavEvent.right) {
+                root.st-btn = 1;
+            } else if (e == NavEvent.select) {
+                if (root.st-btn == 1) {
+                    // Never start a second job over a running one.
+                    if (root.store-job.state != 1) {
+                        root.store-run(root.st-item.id, root.st-item.installed ? "uninstall" : "install");
+                        root.st-level = 3;
+                    }
+                } else {
+                    root.st-level = 1;
+                    root.st-btn = 0;
+                    root.st-scroll = 0;
+                }
+            }
+        } else if (root.st-level == 3) {
+            // No cancel while the job runs. Back to the list: its items were reloaded.
+            if ((e == NavEvent.select || e == NavEvent.back) && (root.store-job.state == 2 || root.store-job.state == -1)) {
+                root.store-dismiss();
+                root.st-level = 0;
+            }
+        }
     }
 
     // Rows in a panel; the Toggles panel (always last, built by the UI) has 2.
@@ -145,6 +265,10 @@ export component AppWindow inherits Window {
             root.settings-nav(e);
             return;
         }
+        if (root.store-open) {
+            root.store-nav(e);
+            return;
+        }
         if (e == NavEvent.right) {
             root.move(1);
         } else if (e == NavEvent.left) {
@@ -157,6 +281,14 @@ export component AppWindow inherits Window {
                 root.s-row = 0;
                 root.settings-open = true;
                 root.settings-changed(true);
+            } else if (root.apps[root.focused].id == "lumen:store") {
+                // A job that is running (or finished while the store was closed)
+                // reopens on its progress view.
+                root.st-level = root.store-job.state != 0 ? 3 : 0;
+                root.st-row = 0;
+                root.st-btn = 0;
+                root.store-open = true;
+                root.store-changed(true);
             } else {
                 root.launch(root.focused);
             }
@@ -212,7 +344,7 @@ export component AppWindow inherits Window {
     // and fades are baked into one opaque image (src/bake.rs), so at rest this
     // is a single layer: the GPU is fill-rate bound at 4K.
     Rectangle {
-        visible: !root.settings-open;
+        visible: !root.settings-open && !root.store-open;
         x: 0;
         y: 0;
         width: root.width;
@@ -227,7 +359,7 @@ export component AppWindow inherits Window {
     }
 
     Text {
-        visible: !root.settings-open;
+        visible: !root.settings-open && !root.store-open;
         x: root.safe-x;
         y: root.safe-y;
         text: "Lumen";
@@ -237,7 +369,7 @@ export component AppWindow inherits Window {
     }
 
     Text {
-        visible: !root.settings-open;
+        visible: !root.settings-open && !root.store-open;
         x: root.width - root.safe-x - self.width;
         y: root.safe-y;
         text: root.clock;
@@ -247,7 +379,7 @@ export component AppWindow inherits Window {
     }
 
     if root.perf-text != "": VerticalLayout {
-        visible: !root.settings-open;
+        visible: !root.settings-open && !root.store-open;
         x: root.width - root.safe-x - self.width;
         y: root.safe-y + 3.5 * root.rem;
         spacing: 0.3 * root.rem;
@@ -269,7 +401,7 @@ export component AppWindow inherits Window {
     }
 
     Text {
-        visible: !root.settings-open;
+        visible: !root.settings-open && !root.store-open;
         x: root.safe-x;
         y: 14 * root.rem;
         text: root.apps[root.focused].name;
@@ -281,7 +413,7 @@ export component AppWindow inherits Window {
 
     // tile row, 22rem pitch
     Rectangle {
-        visible: !root.settings-open;
+        visible: !root.settings-open && !root.store-open;
         x: root.safe-x - root.row-offset;
         y: 35 * root.rem;
         width: root.apps.length * 22 * root.rem;
@@ -309,6 +441,34 @@ export component AppWindow inherits Window {
         level: root.s-level;
         sel-panel: root.s-panel;
         sel-row: root.s-row;
+    }
+
+    if root.store-open && (root.st-level == 0 || root.st-level == 3): StoreScreen {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        state: root.store-state;
+        message: root.store-message;
+        source: root.store-source;
+        items: root.store-items;
+        job: root.store-job;
+        rem: root.rem;
+        level: root.st-level;
+        sel-row: root.st-row;
+        sel-btn: root.st-btn;
+    }
+
+    if root.store-open && (root.st-level == 1 || root.st-level == 2): DetailsScreen {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        item: root.st-item;
+        rem: root.rem;
+        sel-btn: root.st-btn;
+        confirm: root.st-level == 2;
+        scroll <=> root.st-scroll;
     }
 
     if root.input-debug != "": Rectangle {

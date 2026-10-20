@@ -1,0 +1,182 @@
+// Store details and confirm screens: one app's description and the exact
+// commands it runs. Pure view: navigation state lives on AppWindow.
+// Buttons: with an action, [action, Back] (confirm: [Cancel, Run]);
+// needs-root apps have only [Back].
+
+import { Theme } from "theme.slint";
+import { StoreItem } from "store.slint";
+
+component Btn inherits Rectangle {
+    in property <string> label;
+    in property <bool> focused;
+    in property <length> rem: 16px;
+
+    width: 14 * root.rem;
+    height: 4 * root.rem;
+    border-radius: 0.6 * root.rem;
+    background: root.focused ? Theme.focus-bg : Theme.panel;
+    border-width: root.focused ? 0.18 * root.rem : 0px;
+    border-color: Theme.text;
+
+    Text {
+        text: root.label;
+        font-size: 1.6 * root.rem;
+        font-weight: root.focused ? 700 : 500;
+        color: root.focused ? Theme.text : Theme.muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component DetailsScreen inherits Rectangle {
+    in property <StoreItem> item;
+    in property <length> rem: 16px;
+    in property <int> sel-btn: 0;
+    in property <bool> confirm: false;
+    // Scroll position in steps (Up/Down on the TV remote); clamped to what overflows.
+    in-out property <int> scroll: 0;
+
+    property <[string]> steps: root.item.installed ? root.item.uninstall : root.item.install;
+    property <string> verb: root.item.installed ? "Uninstall" : "Install";
+    property <bool> actionable: !root.item.needs-root;
+    property <length> view-h: root.height - 7 * root.rem - 3.4 * root.rem - 6 * root.rem;
+    property <length> step-h: 4 * root.rem;
+    property <length> max-scroll: max(0px, lay.preferred-height - root.view-h);
+    property <int> max-steps: Math.ceil(root.max-scroll / root.step-h);
+
+    background: Theme.bg;
+
+    changed max-steps => {
+        if (root.scroll > root.max-steps) {
+            root.scroll = root.max-steps;
+        }
+    }
+
+    changed scroll => {
+        if (root.scroll > root.max-steps) {
+            root.scroll = root.max-steps;
+        }
+    }
+
+    Text {
+        x: 6 * root.rem;
+        y: 3.4 * root.rem;
+        width: root.width - 12 * root.rem;
+        text: root.item.name;
+        font-size: 2 * root.rem;
+        font-weight: 750;
+        color: Theme.text;
+        overflow: elide;
+    }
+
+    Text {
+        x: root.width - 6 * root.rem - self.width;
+        y: 3.9 * root.rem;
+        width: 40 * root.rem;
+        text: root.max-scroll > 0px
+            ? "Up/Down: scroll   Left/Right: choose   Select: confirm   Back: return"
+            : "Left/Right: choose   Select: confirm   Back: return";
+        font-size: 1.2 * root.rem;
+        color: Theme.muted;
+        horizontal-alignment: right;
+    }
+
+    // Everything the app will do, scrollable so nothing has to be elided.
+    Flickable {
+        x: 6 * root.rem;
+        y: 7 * root.rem;
+        width: root.width - 12 * root.rem;
+        height: root.view-h;
+        interactive: false;
+        content-width: self.width;
+        content-height: max(lay.preferred-height, root.view-h);
+        content-y: -min(root.max-scroll, root.scroll * root.step-h);
+
+        lay := VerticalLayout {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            spacing: 0.8 * root.rem;
+            alignment: start;
+
+            if !root.confirm: Text {
+                text: root.item.description;
+                font-size: 1.6 * root.rem;
+                color: Theme.text;
+                wrap: word-wrap;
+            }
+
+            if !root.confirm: Text {
+                text: root.item.detail;
+                font-size: 1.3 * root.rem;
+                color: Theme.muted;
+                wrap: word-wrap;
+            }
+
+            // What the tile will run once installed (never elided).
+            if root.item.launch != "": Text {
+                text: "Launches: " + root.item.launch;
+                font-size: 1.3 * root.rem;
+                color: Theme.text;
+                wrap: char-wrap;
+            }
+
+            Text {
+                text: root.confirm
+                    ? (root.steps.length == 0
+                        ? (root.item.installed ? "Remove the app entry?" : "Add the app entry?")
+                        : "Run these " + root.steps.length + (root.steps.length == 1 ? " command?" : " commands?"))
+                    : (root.item.needs-root
+                        ? "Needs root: run this over SSH"
+                        : root.item.installed ? "Uninstall runs:" : "Install runs:");
+                font-size: 1.5 * root.rem;
+                font-weight: 650;
+                color: root.item.needs-root && !root.confirm ? Theme.fail : Theme.text;
+                wrap: word-wrap;
+            }
+
+            if root.steps.length == 0: Text {
+                text: root.item.installed
+                    ? "Nothing to run: Lumen only removes the app entry."
+                    : "Nothing to run: Lumen only writes the app entry.";
+                font-size: 1.4 * root.rem;
+                color: Theme.muted;
+                wrap: word-wrap;
+            }
+
+            for s in root.steps: Rectangle {
+                background: Theme.panel;
+                border-radius: 0.4 * root.rem;
+                // Height follows the wrapped text.
+                height: cmd.preferred-height + 1.2 * root.rem;
+
+                cmd := Text {
+                    x: 1.2 * root.rem;
+                    y: 0.6 * root.rem;
+                    width: parent.width - 2.4 * root.rem;
+                    text: s;
+                    font-size: 1.2 * root.rem;
+                    color: Theme.text;
+                    wrap: char-wrap;
+                }
+            }
+        }
+    }
+
+    // Buttons, pinned to the bottom safe margin.
+    Btn {
+        x: 6 * root.rem;
+        y: root.height - 3.4 * root.rem - 4 * root.rem;
+        rem: root.rem;
+        label: root.confirm ? "Cancel" : root.actionable ? root.verb : "Back";
+        focused: root.sel-btn == 0;
+    }
+
+    if root.confirm || root.actionable: Btn {
+        x: 6 * root.rem + 15 * root.rem;
+        y: root.height - 3.4 * root.rem - 4 * root.rem;
+        rem: root.rem;
+        label: root.confirm ? "Run" : "Back";
+        focused: root.sel-btn == 1;
+    }
+}

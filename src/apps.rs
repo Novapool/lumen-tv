@@ -316,6 +316,45 @@ impl Lifecycle {
         steps
     }
 
+    /// The registry changed: replace the specs. Running state stays for ids
+    /// that are still present; an app whose spec is gone is terminated (and
+    /// Lumen comes back if it was in front).
+    pub fn set_specs(&mut self, specs: Vec<Spec>) -> Vec<Step> {
+        let gone: Vec<String> = self
+            .running
+            .keys()
+            .filter(|id| !specs.iter().any(|s| &s.id == *id))
+            .cloned()
+            .collect();
+        let mut steps = Vec::new();
+        let mut terminations = Vec::new();
+        for id in gone {
+            let st = self.running.remove(&id).unwrap();
+            if self.fg == Foreground::App(id.clone()) {
+                self.fg = Foreground::Lumen;
+                steps.push(Step::ActivateLumen);
+            }
+            // Needs the old spec (for `process`), so before the swap.
+            terminations.push(Step::Terminate(self.termination(&id, st)));
+        }
+        steps.extend(terminations);
+        self.specs = specs;
+        steps
+    }
+
+    /// Closes `id` the way Home closes a close-on-exit app (Lumen first, then
+    /// the terminate), whatever its `background` setting; used before an
+    /// uninstall. Nothing if it is not running.
+    pub fn close(&mut self, id: &str) -> Vec<Step> {
+        let Some(st) = self.running.remove(id) else {
+            return vec![];
+        };
+        if self.fg == Foreground::App(id.to_string()) {
+            self.fg = Foreground::Lumen;
+        }
+        vec![Step::ActivateLumen, Step::Terminate(self.termination(id, st))]
+    }
+
     pub fn window_opened(&mut self, w: &WindowInfo, now_ms: u64) -> Vec<Step> {
         self.observe(w, now_ms, true)
     }
@@ -890,6 +929,76 @@ mod tests {
         lc.select(id, 0);
         lc.set_pid(id, 100);
         lc.window_opened(&win(50, id), 10);
+    }
+
+    // set_specs / close
+    #[test]
+    fn set_specs_keeps_running_apps_that_remain() {
+        let mut lc = Lifecycle::new(vec![spec("a"), spec("b")]);
+        up(&mut lc, "a");
+        assert_eq!(lc.set_specs(vec![spec("a"), spec("c")]), vec![]);
+        assert!(lc.is_running("a"));
+        assert_eq!(lc.foreground(), &Foreground::App("a".into()));
+        assert_eq!(lc.select("c", 5), vec![Step::Spawn("c".into())]);
+        assert_eq!(lc.select("b", 5), vec![]); // b is gone
+    }
+    #[test]
+    fn set_specs_terminates_a_removed_foreground_app() {
+        let mut lc = Lifecycle::new(vec![spec("a"), spec("b")]);
+        up(&mut lc, "a");
+        assert_eq!(
+            lc.set_specs(vec![spec("b")]),
+            vec![Step::ActivateLumen, term("a", Some(100), &[50], None)]
+        );
+        assert!(!lc.is_running("a"));
+        assert_eq!(lc.foreground(), &Foreground::Lumen);
+    }
+    #[test]
+    fn set_specs_terminates_a_removed_background_app_without_activating_lumen() {
+        let mut lc = Lifecycle::new(vec![keep("a"), spec("b")]);
+        up(&mut lc, "a");
+        lc.home(true);
+        lc.select("b", 20);
+        let steps = lc.set_specs(vec![spec("b")]);
+        assert_eq!(steps, vec![term("a", Some(100), &[50], None)]);
+        assert!(lc.is_running("b"));
+    }
+    #[test]
+    fn set_specs_terminate_carries_the_old_process() {
+        let mut lc = Lifecycle::new(vec![proc_app("p")]);
+        up(&mut lc, "p");
+        let steps = lc.set_specs(vec![]);
+        assert_eq!(
+            steps,
+            vec![Step::ActivateLumen, term("p", Some(100), &[50], Some("~/real/shell"))]
+        );
+    }
+    #[test]
+    fn close_terminates_and_returns_to_lumen() {
+        let mut lc = Lifecycle::new(vec![spec("a")]);
+        up(&mut lc, "a");
+        assert_eq!(
+            lc.close("a"),
+            vec![Step::ActivateLumen, term("a", Some(100), &[50], None)]
+        );
+        assert!(!lc.is_running("a"));
+        assert_eq!(lc.foreground(), &Foreground::Lumen);
+    }
+    #[test]
+    fn close_ends_a_keep_alive_app_too() {
+        let mut lc = Lifecycle::new(vec![keep("a")]);
+        up(&mut lc, "a");
+        lc.home(true);
+        assert_eq!(
+            lc.close("a"),
+            vec![Step::ActivateLumen, term("a", Some(100), &[50], None)]
+        );
+    }
+    #[test]
+    fn close_of_an_app_that_is_not_running_does_nothing() {
+        let mut lc = Lifecycle::new(vec![spec("a")]);
+        assert_eq!(lc.close("a"), vec![]);
+        assert_eq!(lc.close("zzz"), vec![]);
     }
 
     // select

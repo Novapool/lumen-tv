@@ -1,0 +1,275 @@
+// Store screen: list, confirm and progress views. Pure view: navigation state
+// (level, row, button) lives on AppWindow. The struct names are a contract
+// with the Rust data feed (src/storefeed.rs). Flat opaque fills only.
+
+import { Theme } from "theme.slint";
+
+export struct StoreItem {
+    id: string,
+    name: string,
+    description: string,
+    detail: string,
+    glyph: string,
+    color: color,
+    installed: bool,
+    needs-root: bool,
+    launch: string, // what the installed tile runs: the command, or the URL of a web app
+    install: [string],
+    uninstall: [string],
+}
+
+export struct StoreJob {
+    id: string,
+    name: string,
+    action: string, // "install" | "uninstall"
+    state: int, // 0 none, 1 running, 2 done, -1 failed
+    step: int,
+    steps: int,
+    command: string,
+    lines: [string],
+    message: string,
+}
+
+// The list (level 0) and the progress view (level 3). Levels 1 and 2 are
+// DetailsScreen, which app.slint shows instead.
+export component StoreScreen inherits Rectangle {
+    in property <int> state: 0; // 0 loading, 1 ready, -1 error
+    in property <string> message: "";
+    in property <string> source: "";
+    in property <[StoreItem]> items: [];
+    in property <StoreJob> job;
+    in property <length> rem: 16px;
+    in property <int> level: 0; // 0 list, 1 details, 2 confirm, 3 progress
+    in property <int> sel-row: 0;
+    in property <int> sel-btn: 0;
+
+    property <length> row-h: 5 * root.rem;
+    property <length> view-h: root.height - 12.4 * root.rem;
+    property <length> content-h: root.items.length * root.row-h;
+    property <length> max-scroll: max(0px, root.content-h - root.view-h);
+    property <int> row-shown: max(0, min(root.sel-row, root.items.length - 1));
+    // Progress: the feed keeps the newest 12 output lines.
+    property <length> line-h: 1.5 * root.rem;
+    property <bool> finished: root.job.state == 2 || root.job.state == -1;
+
+    background: Theme.bg;
+
+    Text {
+        x: 6 * root.rem;
+        y: 3.4 * root.rem;
+        text: root.level == 3
+            ? (root.job.action == "uninstall" ? "Uninstalling " : "Installing ") + root.job.name
+            : "Store";
+        font-size: 2 * root.rem;
+        font-weight: 750;
+        color: Theme.text;
+    }
+
+    Text {
+        x: root.width - 6 * root.rem - self.width;
+        y: 3.9 * root.rem;
+        width: 40 * root.rem;
+        text: root.level == 3
+            ? (root.finished ? "Select: continue" : "Working...")
+            : root.state == 1 ? "Up/Down: move   Select: open   Back: close" : "Back: close";
+        font-size: 1.2 * root.rem;
+        color: Theme.muted;
+        horizontal-alignment: right;
+    }
+
+    if root.level == 0: Text {
+        x: 6 * root.rem;
+        y: 6.3 * root.rem;
+        width: root.width - 12 * root.rem;
+        text: root.source;
+        font-size: 1.2 * root.rem;
+        color: Theme.muted;
+        overflow: elide;
+    }
+
+    if root.level == 0 && root.state == 0: Text {
+        x: 6 * root.rem;
+        y: 9 * root.rem;
+        text: "Loading...";
+        font-size: 1.6 * root.rem;
+        color: Theme.muted;
+    }
+
+    if root.level == 0 && root.state == -1: Rectangle {
+        x: 6 * root.rem;
+        y: 9 * root.rem;
+        width: root.width - 12 * root.rem;
+        height: 12 * root.rem;
+        background: Theme.panel;
+        border-radius: 0.6 * root.rem;
+
+        Text {
+            x: 1.6 * root.rem;
+            y: 1.4 * root.rem;
+            width: parent.width - 3.2 * root.rem;
+            text: root.message;
+            font-size: 1.5 * root.rem;
+            color: Theme.fail;
+            wrap: word-wrap;
+        }
+
+        Text {
+            x: 1.6 * root.rem;
+            y: parent.height - 3.2 * root.rem;
+            text: "Select: retry   Back: close";
+            font-size: 1.4 * root.rem;
+            color: Theme.text;
+        }
+    }
+
+    if root.level == 0 && root.state == 1: Rectangle {
+        x: 6 * root.rem;
+        y: 9 * root.rem;
+        width: root.width - 12 * root.rem;
+        height: root.view-h;
+        background: Theme.panel;
+        border-radius: 0.6 * root.rem;
+        clip: true;
+
+        Flickable {
+            interactive: false;
+            content-width: self.width;
+            content-height: max(root.content-h, root.view-h);
+            content-y: -min(root.max-scroll, max(0px, root.row-shown * root.row-h + root.row-h / 2 - root.view-h / 2));
+
+            for it[j] in root.items: Rectangle {
+                x: 0;
+                y: j * root.row-h;
+                width: parent.width;
+                height: root.row-h;
+                background: j == root.row-shown ? Theme.focus-bg : transparent;
+                border-width: j == root.row-shown ? 0.18 * root.rem : 0px;
+                border-color: Theme.text;
+
+                Rectangle {
+                    x: 1.6 * root.rem;
+                    y: (parent.height - self.height) / 2;
+                    width: 3.4 * root.rem;
+                    height: 3.4 * root.rem;
+                    border-radius: 0.6 * root.rem;
+                    background: it.color;
+
+                    Text {
+                        text: it.glyph;
+                        font-size: 1.8 * root.rem;
+                        font-weight: 700;
+                        color: Theme.text;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    x: 6 * root.rem;
+                    y: 0.7 * root.rem;
+                    width: parent.width - 6 * root.rem - 16 * root.rem;
+                    text: it.name;
+                    font-size: 1.7 * root.rem;
+                    font-weight: 650;
+                    color: Theme.text;
+                    overflow: elide;
+                }
+
+                Text {
+                    x: 6 * root.rem;
+                    y: 3 * root.rem;
+                    width: parent.width - 6 * root.rem - 16 * root.rem;
+                    text: it.detail;
+                    font-size: 1.2 * root.rem;
+                    color: Theme.muted;
+                    overflow: elide;
+                }
+
+                Text {
+                    x: parent.width - 1.6 * root.rem - self.width;
+                    width: 14 * root.rem;
+                    height: parent.height;
+                    text: it.installed ? "Installed" : it.needs-root ? "Needs root" : "";
+                    font-size: 1.4 * root.rem;
+                    color: it.installed ? Theme.pass : Theme.muted;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    if root.level == 0 && root.state == 1 && root.items.length == 0: Text {
+        x: 6 * root.rem;
+        y: 9 * root.rem;
+        text: "The store has no apps.";
+        font-size: 1.6 * root.rem;
+        color: Theme.muted;
+    }
+
+    // Progress view.
+    if root.level == 3: Text {
+        x: 6 * root.rem;
+        y: 7 * root.rem;
+        text: root.job.steps == 0
+            ? (root.job.state == -1 ? "" : "Writing the app entry")
+            : "Step " + max(1, root.job.step) + " of " + root.job.steps;
+        font-size: 1.4 * root.rem;
+        color: Theme.muted;
+    }
+
+    if root.level == 3: Text {
+        x: 6 * root.rem;
+        y: 9 * root.rem;
+        width: root.width - 12 * root.rem;
+        height: 3.2 * root.rem;
+        text: root.job.command;
+        font-size: 1.4 * root.rem;
+        color: Theme.text;
+        wrap: word-wrap;
+        overflow: elide;
+    }
+
+    if root.level == 3: Rectangle {
+        x: 6 * root.rem;
+        y: 12.6 * root.rem;
+        width: root.width - 12 * root.rem;
+        height: 12 * root.line-h + 1.6 * root.rem;
+        background: Theme.panel;
+        border-radius: 0.6 * root.rem;
+        clip: true;
+
+        for l[i] in root.job.lines: Text {
+            x: 1.2 * root.rem;
+            y: 0.8 * root.rem + i * root.line-h;
+            width: parent.width - 2.4 * root.rem;
+            height: root.line-h;
+            text: l;
+            font-size: 1.1 * root.rem;
+            color: Theme.muted;
+            overflow: elide;
+        }
+    }
+
+    if root.level == 3 && root.job.state == 2: Text {
+        x: 6 * root.rem;
+        y: root.height - 3.4 * root.rem - 5 * root.rem;
+        width: root.width - 12 * root.rem;
+        text: "Done" + (root.job.message == "" ? "" : ": " + root.job.message);
+        font-size: 1.8 * root.rem;
+        font-weight: 700;
+        color: Theme.pass;
+        wrap: word-wrap;
+    }
+
+    if root.level == 3 && root.job.state == -1: Text {
+        x: 6 * root.rem;
+        y: root.height - 3.4 * root.rem - 5 * root.rem;
+        width: root.width - 12 * root.rem;
+        text: "Failed" + (root.job.message == "" ? "" : ": " + root.job.message);
+        font-size: 1.8 * root.rem;
+        font-weight: 700;
+        color: Theme.fail;
+        wrap: word-wrap;
+    }
+}

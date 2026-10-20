@@ -115,6 +115,35 @@ pub fn start(ui: &AppWindow, entries: Vec<Entry>) -> Arc<AtomicBool> {
     lumen_front
 }
 
+/// The registry was reloaded: replace the entries the launcher spawns from
+/// and hand the specs to the planner. Apps whose entry is gone are terminated;
+/// the tiles' running dots are refreshed by `run`. UI thread only.
+pub fn set_entries(entries: Vec<Entry>) {
+    let steps = with_ctx(|c| {
+        let steps = c.lc.set_specs(entries.iter().map(Spec::from).collect());
+        c.entries = entries;
+        steps
+    });
+    if let Some(steps) = &steps {
+        if !steps.is_empty() {
+            println!("[apps] registry changed -> {}", describe(steps));
+        }
+    }
+    run(steps.unwrap_or_default());
+}
+
+/// Closes a running app (before an uninstall): Lumen comes to the front and
+/// the app is terminated like Home does for a close-on-exit app. Returns once
+/// the steps are issued, with the PIDs that were sent the terminate (empty if
+/// the app wasn't running); the exit arrives later through the reaper as usual.
+pub fn close_app(id: &str) -> Vec<u32> {
+    let steps = with_ctx(|c| c.lc.close(id)).unwrap_or_default();
+    if !steps.is_empty() {
+        println!("[apps] close {id} -> {}", describe(&steps));
+    }
+    run(steps)
+}
+
 /// Claims the TV remote (CEC identity + active source + keymap remap) on a
 /// worker thread, since `cec-ctl` blocks. The result goes to the log and to the
 /// Settings Input panel. `why` is "startup" or "re-claimed". The caller has
@@ -238,7 +267,9 @@ fn log_err(what: &str, r: Result<(), String>) {
 }
 
 /// Carries out the planner's steps, then refreshes the tiles' running dots.
-fn run(steps: Vec<Step>) {
+/// Returns the PIDs of every `Terminate` step (for callers that wait for them).
+fn run(steps: Vec<Step>) -> Vec<u32> {
+    let mut terminated = Vec::new();
     for step in steps {
         match step {
             Step::Spawn(id) => spawn(&id),
@@ -282,11 +313,13 @@ fn run(steps: Vec<Step>) {
                         log_err("close", win.close(*w));
                     }
                 }
+                terminated.extend(pids.iter().copied());
                 apps::terminate(pids, CLOSE_GRACE);
             }
         }
     }
     sync_tiles();
+    terminated
 }
 
 fn spawn(id: &str) {

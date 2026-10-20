@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "apps": [
+    {
+      "id": "jellyfin",
+      "name": "Jellyfin",
+      "type": "url",
+      "url": "http://192.168.5.174:8096",
+      "background": "keep-alive",
+      "app_id": "lumen-jellyfin",
+      "icon": "org.jellyfin.JellyfinDesktop",
+      "glyph": "J",
+      "colors": ["#6b2fb3", "#00a4dc"],
+      "order": 10,
+      "description": "Jellyfin web client in the kiosk browser, pointed at the media server on the rack.",
+      "detail": "Web app",
+      "install": [],
+      "uninstall": []
+    },
+    {
+      "id": "steamlink",
+      "name": "Steam Link",
+      "launch": "steamlink",
+      "background": "close-on-exit",
+      "exclusive": true,
+      "app_id": "SteamLink",
+      "process": "~/.local/share/SteamLink/bin/shell",
+      "icon": "steamlink",
+      "glyph": "S",
+      "colors": ["#0b1a33", "#1b6fd1"],
+      "order": 30,
+      "description": "Streams games from the Windows PC. Installing the package needs root.",
+      "detail": "apt (root)",
+      "root": true,
+      "install": ["sudo apt install -y steamlink"],
+      "uninstall": ["sudo apt remove -y steamlink"]
+    },
+    {
+      "id": "kolourpaint",
+      "name": "KolourPaint",
+      "launch": "flatpak run org.kde.kolourpaint",
+      "background": "close-on-exit",
+      "app_id": "org.kde.kolourpaint",
+      "icon": "org.kde.kolourpaint",
+      "glyph": "P",
+      "colors": ["#1d3557", "#e63946"],
+      "order": 50,
+      "description": "Simple paint program from KDE. A small Flatpak, installed for the current user only.",
+      "detail": "Flatpak (user)",
+      "install": ["flatpak install --user -y --noninteractive flathub org.kde.kolourpaint"],
+      "uninstall": ["flatpak uninstall --user -y --noninteractive org.kde.kolourpaint"]
+    },
+    {
+      "id": "store-test",
+      "name": "Store test (fails)",
+      "launch": "flatpak run org.lumen.DoesNotExist",
+      "background": "close-on-exit",
+      "glyph": "!",
+      "colors": ["#4a1010", "#b3261e"],
+      "order": 90,
+      "description": "Exists only to test the error path: the install step names a Flatpak that does not exist, so it fails and Lumen writes no app entry.",
+      "detail": "Flatpak (user)",
+      "install": ["flatpak install --user -y --noninteractive flathub org.lumen.DoesNotExist"],
+      "uninstall": ["flatpak uninstall --user -y --noninteractive org.lumen.DoesNotExist"]
+    }
+  ]
+}
