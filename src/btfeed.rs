@@ -236,6 +236,7 @@ fn changed(ui: &AppWindow, open: bool) {
             // Always: a scan may be running that this feed did not time.
             std::thread::spawn(move || {
                 let _ = backend.stop_scan();
+                backend.close();
             });
         }
     }

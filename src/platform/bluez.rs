@@ -1,14 +1,17 @@
-// BlueZ over `busctl --system` subprocesses (no D-Bus crate), plus one held
-// `bluetoothctl --timeout N scan on` child for discovery: BlueZ ends a
+// BlueZ over `busctl --system` subprocesses (no D-Bus crate), plus two held
+// `bluetoothctl` children: `--timeout N scan on` for discovery (BlueZ ends a
 // discovery session when the D-Bus client that started it disconnects, so a
-// one-shot StartDiscovery call would do nothing. With no agent registered,
-// Pair uses Just Works. Errors are returned as busctl's raw text; callers
+// one-shot StartDiscovery call would do nothing), and the pairing agent
+// (agent_slot.rs). The two stay separate: the scan has its own timeout and
+// stop/start rhythm, while the agent must outlive a scan stop (Pair stops the
+// scan first) and is released only when the panel closes. Errors are returned as busctl's raw text; callers
 // map them with `bluetooth::friendly_error`.
 
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use crate::bluetooth::{self, BtErr};
+use super::agent_slot::{AgentSlot, AGENT_SETTLE};
 use super::scan_slot::ScanSlot;
 use super::{Bluetooth, BtSnapshot};
 
@@ -21,6 +24,7 @@ const SCAN_SETTLE: Duration = Duration::from_millis(300);
 #[derive(Default)]
 pub struct BluezBt {
     scan: ScanSlot,
+    agent: AgentSlot,
 }
 
 /// `/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF`; rejects anything that is not a
@@ -72,6 +76,11 @@ fn set_bool(path: &str, iface: &str, prop: &str, v: bool) -> Result<(), String> 
 /// Best effort: is the device already paired? (false on any error)
 fn is_paired(path: &str) -> bool {
     busctl(&["get-property", SERVICE, path, "org.bluez.Device1", "Paired"]).is_ok_and(|o| o.trim() == "b true")
+}
+
+/// Best effort: has BlueZ bonded the device? (false on any error)
+fn is_bonded(path: &str) -> bool {
+    busctl(&["get-property", SERVICE, path, "org.bluez.Device1", "Bonded"]).is_ok_and(|o| o.trim() == "b true")
 }
 
 /// `busctl --json=short get-property` for the named props on one interface;
@@ -175,28 +184,51 @@ impl Bluetooth for BluezBt {
 
     fn pair(&self, addr: &str) -> Result<(), String> {
         let path = device_path(addr)?;
-        eprintln!("[bt] pair {addr}: trust, pair, connect");
+        eprintln!("[bt] pair {addr}: agent, trust, pair, trust, connect");
         self.scan.stop(); // discovery shares the radio: pairing/connecting during it fails
+        // Without a default agent BlueZ pairs but does not bond, and then
+        // rejects the pad's HID link.
+        let mut cmd = Command::new("bluetoothctl");
+        crate::apps::drop_ambient_caps(&mut cmd);
+        if let Err(e) = self.agent.ensure(cmd, AGENT_SETTLE) {
+            eprintln!("[bt] pairing agent failed: {e}");
+            return Err(format!("Pairing agent didn't start ({e}). Try again"));
+        }
         let was_paired = is_paired(&path);
-        // Trusted first, so the pad's own HID connection right after pairing
-        // is authorized without an agent, and it can reconnect by itself later.
-        set_bool(&path, "org.bluez.Device1", "Trusted", true)?;
-        match call(&path, "org.bluez.Device1", "Pair", &[]) {
+        const DEV: &str = "org.bluez.Device1";
+        // Trusted first, so the pad's own authentication right after pairing is
+        // allowed; and again after, since a bonding pass can clear it.
+        set_bool(&path, DEV, "Trusted", true)?;
+        let untrust = |was_paired: bool| {
+            if !was_paired {
+                // Don't leave a failed pairing trusted (best effort).
+                let _ = set_bool(&path, DEV, "Trusted", false);
+            }
+        };
+        match call(&path, DEV, "Pair", &[]) {
             Ok(()) => {}
             Err(e) if bluetooth::classify(&e) == BtErr::AlreadyPaired => {}
             Err(e) => {
-                if !was_paired {
-                    // Don't leave a failed pairing trusted (best effort).
-                    let _ = set_bool(&path, "org.bluez.Device1", "Trusted", false);
-                }
+                untrust(was_paired);
                 return Err(e);
             }
         }
-        match call(&path, "org.bluez.Device1", "Connect", &[]) {
+        set_bool(&path, DEV, "Trusted", true)?;
+        if !is_bonded(&path) {
+            eprintln!("[bt] pair {addr}: paired but not bonded");
+            untrust(was_paired);
+            return Err("Paired but not bonded. Forget it and pair again".into());
+        }
+        match call(&path, DEV, "Connect", &[]) {
             // The pad often connects by itself right after Pair.
             Err(e) if bluetooth::classify(&e) == BtErr::AlreadyConnected => Ok(()),
             r => r,
         }
+    }
+
+    fn close(&self) {
+        eprintln!("[bt] pairing agent off");
+        self.agent.stop();
     }
 
     fn connect(&self, addr: &str) -> Result<(), String> {

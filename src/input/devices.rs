@@ -17,6 +17,7 @@ use evdev::{AbsoluteAxisCode, EventType, KeyCode};
 use inotify::{Inotify, WatchMask};
 
 use super::dispatch::{back_long_press_is_home, home_needs_hold, Dispatcher, SourceClass};
+use super::keys_out::{self, Out};
 use super::mapping::{self, DeviceInfo, DeviceMap, EV_ABS, EV_KEY};
 use super::{Action, DeviceStatus, Status};
 
@@ -112,6 +113,9 @@ fn try_open(path: PathBuf, tx: &Sender<Msg>, open: &Open) {
             return;
         }
     };
+    if keys_out::is_own_device(dev.name().unwrap_or("")) {
+        return; // our own virtual keyboard: reading it would loop (path stays marked open)
+    }
     let id = dev.input_id();
     let axes = dev
         .get_absinfo()
@@ -184,6 +188,16 @@ fn run(
 ) {
     let mut devices: HashMap<PathBuf, Device> = HashMap::new();
     let mut dispatch: Dispatcher<std::path::PathBuf> = Dispatcher::default();
+    let mut out = Out::open();
+    // Gamepad actions become keys while a web app is in front.
+    let mut inject = |class: SourceClass, action: Action| {
+        if let Some((name, code)) = keys_out::app_key(class, action, super::foreground_is_web()) {
+            if debug.load(Ordering::Relaxed) {
+                println!("[input] -> app key {name}");
+            }
+            out.tap(code);
+        }
+    };
     loop {
         let msg = match dispatch.deadline() {
             Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
@@ -195,6 +209,7 @@ fn run(
         for (path, action) in dispatch.tick(now) {
             if let Some(d) = devices.get(&path) {
                 with_status(&status, &path, |s| s.last_action = Some((action, now)));
+                inject(d.class, action);
                 on_action(action, &d.name);
             }
         }
@@ -261,6 +276,7 @@ fn run(
                     };
                     if let Some(action) = out {
                         with_status(&status, &path, |s| s.last_action = Some((action, now)));
+                        inject(d.class, action);
                         on_action(action, &d.name);
                     }
                 }

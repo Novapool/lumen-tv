@@ -113,6 +113,8 @@ Decisions so far:
   - **Deviations:** A4 permission denial (above); A7 second ESC closed Settings; A9 scan ran 60 s; extra read-only probes (busctl variants, `bluetoothctl show`, `vcgencmd`).
 - 4.1 fixes (2026-10-20, Mac 213 tests, Pi 221): bluez `snapshot` no longer uses GetManagedObjects (busctl JSON fails on `a{qv}` ManufacturerData); it lists `busctl --list tree org.bluez`, then `get-property` per path (adapter `Address Powered Discovering`; device `Address Alias Paired Trusted Connected`, then `RSSI Icon` only for named devices, per property on failure, Battery1 for connected), max 40 devices; pure parsers + tests in `bluetooth.rs`; `--bt-check` shares it. Leaving the Bluetooth rows (level 1 -> 0) now calls new `bt-leave-rows()` -> `btfeed::leave_rows` stops Lumen's scan; fake-pad dualsense comment fixed.
 - **A9 re-run PASS (main conversation, 2026-10-20 23:06, Laith's OK).** After the per-property snapshot fix: `[bt] scan on (60 s)`, child `bluetoothctl --timeout 60 scan on`; 0 `snapshot failed` lines; `--bt-check` during the scan: 40 device objects (cap), 13 named shown; no agent registered (0 journal lines). ESC from the rows → `[bt] scan off` at once, 0 bluetoothctl children, adapter Discovering false. A4-A6 (fake pair/fail/forget) dropped from automation (permission classifier, Laith picked covering them at the TV). Env restored (`cmp` OK), lumen-test active, kodi inactive.
+- **TV test round 1 (Laith, 2026-10-20 23:09-23:14).** Panel pairing gave Paired=true, Bonded=false → `hidp_add_connection() Rejected connection from !bonded device`, no evdev node, buttons dead. Manual re-pair from a bluetoothctl session with `agent NoInputNoOutput` + `default-agent` → Bonded=true; Trusted had to be set again; PS press → nodes event9 (pad → playstation.toml), event10/11 (motion/touchpad, ignored); buttons work in Lumen. Jellyfin web ignored the pad (touchpad pointer only). Laith: Lumen turns pad actions into keys for web apps (scope change).
+- Fixes (2026-10-20): `src/platform/agent_slot.rs` holds a bluetoothctl default agent (`agent off` → `agent NoInputNoOutput` → `default-agent`, each waiting for its confirmation) while the panel is open; `pair()` = stop scan → agent → Trusted → Pair → Trusted again → check Bonded (else "Paired but not bonded. Forget it and pair again") → Connect. `src/input/keys_out.rs`: uinput keyboard "lumen-keys" (ignored by Lumen's reader); gamepad actions while a `type = "url"` app is in front → KEY_UP/DOWN/LEFT/RIGHT/ENTER/BACK/PLAYPAUSE; foreground web flag from `session::sync_tiles`. Mac 226, Pi 234 tests.
 
 ## Known issues
 - After `systemctl stop lumen-test`, its ExecStopPost starts Kodi: wait until kodi is active before starting a test unit again.
@@ -136,7 +138,7 @@ Decisions so far:
 ## Next Steps
 1. **M4.5 kickoff (orchestrator).** Read MILESTONES.md M4.5 + scope changes, BRIEF.md, this file's Settled / Slint rules / Known issues, and `../CLAUDE.md`; write AGENT_JOBS.md. Controllers (PS5 DualSense, Xbox) and a Bluetooth pairing screen in Settings.
 2. Give the root install helper (PIN) its own MILESTONES entry with a Gate (project-director), slotted after M4.5.
-3. Confirm the proposed M5.5 and M6 Gate lines and M6's open questions (Pi 4? flashable image?) with Laith before either starts.
+3. Confirm the proposed M5.5 and M6 Gate lines with Laith before either starts (M6 is settled as Pi 5 only, `.deb` only).
 4. Untested from M4: uninstalling a keep-alive app while it runs in the background (the 8 s wait before step 1). Check it once with Jellyfin.
 
 ## Recently Completed

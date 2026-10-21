@@ -7,6 +7,8 @@ pub mod fake_bt;
 pub mod pi;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod scan_slot;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod agent_slot;
 #[cfg(target_os = "linux")]
 pub mod bluez;
 #[cfg(target_os = "linux")]
@@ -65,6 +67,8 @@ pub trait Bluetooth: Send + Sync {
     fn connect(&self, addr: &str) -> Result<(), String>;
     fn disconnect(&self, addr: &str) -> Result<(), String>;
     fn forget(&self, addr: &str) -> Result<(), String>;
+    /// The panel closed: release what was held for it (the pairing agent).
+    fn close(&self) {}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

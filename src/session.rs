@@ -364,6 +364,14 @@ fn sync_tiles() {
             apps::Foreground::App(id) => Some(id.clone()),
             apps::Foreground::Lumen => None,
         });
+        let web = match c.lc.foreground() {
+            apps::Foreground::App(id) => c
+                .entries
+                .iter()
+                .any(|e| e.id == *id && e.kind == crate::registry::Kind::Url),
+            apps::Foreground::Lumen => false,
+        };
+        crate::input::set_foreground_web(web);
         if let Ok(mut t) = c.targets.lock() {
             *t = c.lc.poll_targets();
         }
