@@ -216,6 +216,9 @@ mod pad {
         // Start this in Settings (Lumen in front). Nothing here presses
         // Select (Cross would launch a tile on Home or toggle a Settings
         // row), so the script only moves focus and exercises Back/Home.
+        // Note: the Circle tap (Back) closes Settings when it starts at the
+        // panel list, so everything after it, including the held Circle
+        // (Home), runs on Home. Harmless: Home stays Home.
         let tap = Duration::from_millis(80);
         ds.pad.axis(Abs::ABS_HAT0Y, 1, "d-pad Down (expect Down)", tap)?;
         ds.pad.tap(Key::BTN_START, "Options (expect Menu)", tap)?;

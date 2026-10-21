@@ -74,17 +74,67 @@ fn is_paired(path: &str) -> bool {
     busctl(&["get-property", SERVICE, path, "org.bluez.Device1", "Paired"]).is_ok_and(|o| o.trim() == "b true")
 }
 
+/// `busctl --json=short get-property` for the named props on one interface;
+/// one value slot per name when the call succeeds.
+fn get_props(path: &str, iface: &str, names: &[&str]) -> Option<Vec<Option<serde_json::Value>>> {
+    let mut args = vec!["--json=short", "get-property", SERVICE, path, iface];
+    args.extend_from_slice(names);
+    let vals = bluetooth::parse_prop_lines(&busctl(&args).ok()?);
+    (vals.len() == names.len()).then_some(vals)
+}
+
+/// Required Device1 props come in one call; RSSI and Icon (absent on many
+/// devices, which fails the call) in one more, then one by one on failure.
+/// Unnamed devices are dropped by the panel anyway, so they skip the extras.
+fn read_device(path: &str) -> Option<crate::platform::BtDeviceInfo> {
+    const DEV: &str = "org.bluez.Device1";
+    let mut names = vec!["Address", "Alias", "Paired", "Trusted", "Connected"];
+    let mut vals = get_props(path, DEV, &names)?;
+    let named = bluetooth::device_from_props(&names, &vals, None)?.name.is_some();
+    if !named {
+        return bluetooth::device_from_props(&names, &vals, None);
+    }
+    let opt = ["RSSI", "Icon"];
+    if let Some(v) = get_props(path, DEV, &opt) {
+        names.extend(opt);
+        vals.extend(v);
+    } else {
+        for o in opt {
+            if let Some(v) = get_props(path, DEV, &[o]) {
+                names.push(o);
+                vals.extend(v);
+            }
+        }
+    }
+    let connected = bluetooth::device_from_props(&names, &vals, None)?.connected;
+    // Best effort: Battery1 exists only on some connected devices.
+    let battery = connected
+        .then(|| get_props(path, "org.bluez.Battery1", &["Percentage"]))
+        .flatten()
+        .and_then(|v| v.into_iter().next().flatten())
+        .and_then(|v| v.as_i64());
+    bluetooth::device_from_props(&names, &vals, battery)
+}
+
+/// Object paths from `tree`, then only the properties the panel needs (see
+/// bluetooth.rs "per-property reads" for why not GetManagedObjects).
+fn read_snapshot() -> Result<BtSnapshot, String> {
+    let tree = busctl(&["--list", "tree", SERVICE])?;
+    let (adapter_path, device_paths) = bluetooth::parse_bluez_paths(&tree);
+    let mut snap = BtSnapshot::default();
+    if let Some(p) = adapter_path {
+        let names = ["Address", "Powered", "Discovering"];
+        if let Some(vals) = get_props(&p, "org.bluez.Adapter1", &names) {
+            snap.adapter = Some(bluetooth::adapter_from_props(&names, &vals));
+        }
+    }
+    snap.devices = device_paths.iter().filter_map(|p| read_device(p)).collect();
+    Ok(snap)
+}
+
 impl Bluetooth for BluezBt {
     fn snapshot(&self) -> Result<BtSnapshot, String> {
-        let json = busctl(&[
-            "--json=short",
-            "call",
-            SERVICE,
-            "/",
-            "org.freedesktop.DBus.ObjectManager",
-            "GetManagedObjects",
-        ])?;
-        let mut snap = crate::bluetooth::parse_managed_objects(&json)?;
+        let mut snap = read_snapshot()?;
         snap.scan_error = self.scan.take_error();
         // Classic-BT HID pads (DualSense) have no Battery1; hid-playstation
         // exposes a power_supply instead.

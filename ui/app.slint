@@ -58,6 +58,7 @@ export component AppWindow inherits Window {
     property <string> bt-pending: "";
     property <bool> bt-active: false; // bt-changed(true) sent and not yet undone
     callback bt-changed(bool); // panel opened or closed: Rust starts/stops polling and scanning
+    callback bt-leave-rows(); // Back/Left from the device rows to the panel list: Rust stops Lumen's scan
     callback bt-scan(); // toggles the scan; powers the adapter on when it's off
     callback bt-action(string, string); // (address, "pair"|"connect"|"disconnect"|"forget")
     callback nav-trace(string); // one human line after every nav(); Rust prints it only while input debug is on
@@ -175,6 +176,7 @@ export component AppWindow inherits Window {
         if (root.s-level == 1) {
             if (e == NavEvent.back || e == NavEvent.left) {
                 root.s-level = 0;
+                root.bt-leave-rows();
             } else if (e == NavEvent.up) {
                 root.s-row = max(0, min(root.bt-devices.length, root.s-row) - 1);
             } else if (e == NavEvent.down) {

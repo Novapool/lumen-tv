@@ -4,7 +4,8 @@
 // that hop back with `upgrade_in_event_loop`, like storefeed.rs.
 //
 // The panel tells us when it is showing (`bt-changed`): only then does the 1 s
-// poll run, and leaving it (or closing Settings) stops the scan.
+// poll run, and leaving it (or closing Settings) stops the scan; so does
+// leaving the device rows for the panel list (`bt-leave-rows`).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -242,6 +243,14 @@ fn changed(ui: &AppWindow, open: bool) {
 
 /// Scan row: start (powering the adapter on first) or stop. "Stop" is offered
 /// only for the scan Lumen's own timer runs.
+/// Back/Left from the device rows to the panel list: D7 says a scan stops when
+/// you leave the device list. Polling goes on while the panel is still shown.
+fn leave_rows(ui: &AppWindow) {
+    if with(|f| f.scan.active()) == Some(true) {
+        scan(ui); // while scanning, the toggle is a stop
+    }
+}
+
 fn scan(ui: &AppWindow) {
     let Some((backend, scanning, powered)) = with(|f| {
         let powered = f.snapshot.adapter.as_ref().is_some_and(|a| a.powered);
@@ -406,6 +415,12 @@ pub fn wire(ui: &AppWindow) {
     ui.on_bt_changed(move |open| {
         if let Some(ui) = weak.upgrade() {
             changed(&ui, open);
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_bt_leave_rows(move || {
+        if let Some(ui) = weak.upgrade() {
+            leave_rows(&ui);
         }
     });
     let weak = ui.as_weak();

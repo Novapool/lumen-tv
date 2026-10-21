@@ -22,6 +22,7 @@ pub const MAX_DEVICES: usize = 20;
 /// `{"type":"a{oa{sa{sv}}}","data":[{path:{iface:{prop:{"type":..,"data":..}}}}]}`.
 /// Devices come out in object-path order, unfiltered and with `battery` taken
 /// from `org.bluez.Battery1` when present.
+#[cfg(test)]
 pub fn parse_managed_objects(json: &str) -> Result<BtSnapshot, String> {
     let v: Value = serde_json::from_str(json).map_err(|e| format!("bluez json: {e}"))?;
     let objects = v
@@ -67,15 +68,106 @@ pub fn parse_managed_objects(json: &str) -> Result<BtSnapshot, String> {
     Ok(snap)
 }
 
+// ---------- per-property reads ----------
+//
+// GetManagedObjects can't be used live: busctl's JSON writer fails on the
+// whole reply when any device carries a property with non-string dict keys
+// (ManufacturerData is `a{qv}`). So the backend lists object paths, then reads
+// only the properties it needs, so one bad property can never sink a snapshot.
+
+/// At most this many device paths are read per snapshot.
+pub const MAX_DEVICE_PATHS: usize = 40;
+
+/// `busctl --list tree org.bluez` -> (adapter path if present, device paths),
+/// keeping only `/org/bluez/hciN` and `/org/bluez/hciN/dev_XX_XX_XX_XX_XX_XX`.
+pub fn parse_bluez_paths(list: &str) -> (Option<String>, Vec<String>) {
+    let mut adapter = None;
+    let mut devices = Vec::new();
+    for line in list.lines() {
+        let Some(rest) = line.trim().strip_prefix("/org/bluez/hci") else { continue };
+        let (n, tail) = rest.split_once('/').unwrap_or((rest, ""));
+        if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if tail.is_empty() {
+            adapter.get_or_insert_with(|| line.trim().to_string());
+        } else if let Some(mac) = tail.strip_prefix("dev_") {
+            let parts: Vec<_> = mac.split('_').collect();
+            if parts.len() == 6 && parts.iter().all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit())) {
+                devices.push(line.trim().to_string());
+            }
+        }
+    }
+    devices.truncate(MAX_DEVICE_PATHS);
+    (adapter, devices)
+}
+
+/// Output of `busctl --json=short get-property ... P1 P2 ...`: one
+/// `{"type":..,"data":..}` per line, in order. A line that does not parse
+/// gives `None` in its slot and leaves the others alone.
+pub fn parse_prop_lines(out: &str) -> Vec<Option<Value>> {
+    out.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str::<Value>(l).ok().and_then(|v| v.get("data").cloned()))
+        .collect()
+}
+
+fn pair_up<'a>(names: &[&'a str], vals: &[Option<Value>]) -> Vec<(&'a str, Value)> {
+    names.iter().zip(vals).filter_map(|(n, v)| Some((*n, v.clone()?))).collect()
+}
+
+fn get<'a>(props: &'a [(&str, Value)], k: &str) -> Option<&'a Value> {
+    props.iter().find(|(n, _)| *n == k).map(|(_, v)| v)
+}
+
+/// Adapter1 `Address Powered Discovering`.
+pub fn adapter_from_props(names: &[&str], vals: &[Option<Value>]) -> BtAdapter {
+    let p = pair_up(names, vals);
+    BtAdapter {
+        address: get(&p, "Address").and_then(Value::as_str).unwrap_or_default().to_string(),
+        powered: get(&p, "Powered").and_then(Value::as_bool).unwrap_or(false),
+        discovering: get(&p, "Discovering").and_then(Value::as_bool).unwrap_or(false),
+    }
+}
+
+/// Device1 properties (any subset of Address Alias Name Paired Trusted
+/// Connected RSSI Icon) plus an optional Battery1 percentage. None without
+/// an Address. Alias/Name that is just the MAC is not a name.
+pub fn device_from_props(names: &[&str], vals: &[Option<Value>], battery: Option<i64>) -> Option<BtDeviceInfo> {
+    let p = pair_up(names, vals);
+    let s = |k: &str| get(&p, k).and_then(Value::as_str).map(str::to_string);
+    let b = |k: &str| get(&p, k).and_then(Value::as_bool).unwrap_or(false);
+    let address = s("Address")?;
+    let dashed = address.replace(':', "-");
+    let name = ["Alias", "Name"]
+        .iter()
+        .filter_map(|k| s(k))
+        .find(|n| !n.is_empty() && !n.eq_ignore_ascii_case(&dashed) && !n.eq_ignore_ascii_case(&address));
+    Some(BtDeviceInfo {
+        name,
+        icon: s("Icon"),
+        paired: b("Paired"),
+        trusted: b("Trusted"),
+        connected: b("Connected"),
+        rssi: get(&p, "RSSI").and_then(Value::as_i64).and_then(|n| i16::try_from(n).ok()),
+        battery: battery.map(|n| n.clamp(0, 100) as u8),
+        address,
+    })
+}
+
+#[cfg(test)]
 fn prop<'a>(iface: &'a Value, key: &str) -> Option<&'a Value> {
     iface.get(key)?.get("data")
 }
+#[cfg(test)]
 fn prop_str(iface: &Value, key: &str) -> Option<String> {
     prop(iface, key)?.as_str().map(str::to_string)
 }
+#[cfg(test)]
 fn prop_bool(iface: &Value, key: &str) -> Option<bool> {
     prop(iface, key)?.as_bool()
 }
+#[cfg(test)]
 fn prop_i64(iface: &Value, key: &str) -> Option<i64> {
     prop(iface, key)?.as_i64()
 }
@@ -390,6 +482,53 @@ mod tests {
         assert_eq!(beacon.name, None, "dashed-MAC alias is not a name");
         let spk = s.devices.iter().find(|d| d.address == "AA:BB:CC:00:00:04").unwrap();
         assert_eq!(spk.battery, Some(55), "Battery1 on the device path");
+    }
+
+    #[test]
+    fn bluez_paths_keep_adapter_and_devices_only() {
+        let list = "/org/bluez\n/org/bluez/hci0\n/org/bluez/hci0/dev_AA_BB_CC_00_00_01\n\
+                    /org/bluez/hci0/dev_AA_BB_CC_00_00_01/fd0\n/org/bluez/hci0/dev_AA_BB_CC_00_00_0\n\
+                    /org/bluez/hci0/dev_AA_BB_CC_00_00_02\n/org/bluez/agent\n";
+        let (a, d) = parse_bluez_paths(list);
+        assert_eq!(a.as_deref(), Some("/org/bluez/hci0"));
+        assert_eq!(d, ["/org/bluez/hci0/dev_AA_BB_CC_00_00_01", "/org/bluez/hci0/dev_AA_BB_CC_00_00_02"]);
+        assert_eq!(parse_bluez_paths("").0, None);
+        let many: String = (0..60).map(|i| format!("/org/bluez/hci0/dev_AA_BB_CC_00_00_{i:02X}\n")).collect();
+        assert_eq!(parse_bluez_paths(&many).1.len(), MAX_DEVICE_PATHS);
+    }
+
+    #[test]
+    fn one_unparseable_property_does_not_sink_the_device() {
+        // Third line is what a failed JSON writer leaves behind.
+        let out = "{\"type\":\"s\",\"data\":\"AA:BB:CC:00:00:05\"}\n\
+                   {\"type\":\"s\",\"data\":\"Pad 5\"}\n\
+                   Failed to create new json object: Invalid argument\n\
+                   {\"type\":\"b\",\"data\":true}\n\
+                   {\"type\":\"b\",\"data\":false}\n";
+        let vals = parse_prop_lines(out);
+        assert_eq!(vals.len(), 5);
+        assert!(vals[2].is_none());
+        let d = device_from_props(&["Address", "Alias", "Icon", "Paired", "Connected"], &vals, Some(250)).unwrap();
+        assert_eq!(d.address, "AA:BB:CC:00:00:05");
+        assert_eq!(d.name.as_deref(), Some("Pad 5"));
+        assert_eq!(d.icon, None);
+        assert!(d.paired && !d.connected);
+        assert_eq!(d.battery, Some(100));
+        // No Address at all: skipped, not an error.
+        assert!(device_from_props(&["Address"], &[None], None).is_none());
+    }
+
+    #[test]
+    fn device_props_mac_alias_is_not_a_name_and_rssi_parses() {
+        let vals = parse_prop_lines(
+            "{\"type\":\"s\",\"data\":\"AA:BB:CC:00:00:06\"}\n{\"type\":\"s\",\"data\":\"AA-BB-CC-00-00-06\"}\n{\"type\":\"n\",\"data\":-70}\n",
+        );
+        let d = device_from_props(&["Address", "Alias", "RSSI"], &vals, None).unwrap();
+        assert_eq!(d.name, None);
+        assert_eq!(d.rssi, Some(-70));
+        let vals = parse_prop_lines("{\"type\":\"s\",\"data\":\"AA:BB:CC:00:00:00\"}\n{\"type\":\"b\",\"data\":true}\n");
+        let a = adapter_from_props(&["Address", "Powered", "Discovering"], &vals);
+        assert!(a.powered && !a.discovering);
     }
 
     #[test]

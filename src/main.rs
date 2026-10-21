@@ -210,7 +210,7 @@ fn store_check(source: Option<String>) -> ! {
     std::process::exit(i32::from(!m.errors.is_empty() || m.fatal));
 }
 
-/// `lumen-tv --bt-check`: one read-only GetManagedObjects through the parser;
+/// `lumen-tv --bt-check`: one read-only snapshot (the panel's code path);
 /// prints the adapter and every device, then the rows the panel would show.
 /// Exit 0 if BlueZ answered, else 1. No UI, nothing is scanned or changed.
 fn bt_check() -> ! {
