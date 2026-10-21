@@ -3,7 +3,12 @@
 // need them: Installer in M4, Display in M5. `Windows` (M3) is the window
 // control seam; its Linux implementation talks to labwc in `toplevel`.
 
+pub mod fake_bt;
 pub mod pi;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod scan_slot;
+#[cfg(target_os = "linux")]
+pub mod bluez;
 #[cfg(target_os = "linux")]
 pub mod toplevel;
 
@@ -45,4 +50,56 @@ pub trait Windows: Send + Sync {
     /// Asks the app to close the window (it may refuse or ask to save).
     fn close(&self, id: u64) -> Result<(), String>;
     fn set_fullscreen(&self, id: u64) -> Result<(), String>;
+}
+
+/// The Bluetooth adapter and its devices. Every call may block (BlueZ over
+/// D-Bus), so callers use worker threads.
+pub trait Bluetooth: Send + Sync {
+    fn snapshot(&self) -> Result<BtSnapshot, String>;
+    fn set_powered(&self, on: bool) -> Result<(), String>;
+    /// Scans for up to `secs` seconds.
+    fn start_scan(&self, secs: u32) -> Result<(), String>;
+    fn stop_scan(&self) -> Result<(), String>;
+    /// The whole sequence: trust, pair, connect.
+    fn pair(&self, addr: &str) -> Result<(), String>;
+    fn connect(&self, addr: &str) -> Result<(), String>;
+    fn disconnect(&self, addr: &str) -> Result<(), String>;
+    fn forget(&self, addr: &str) -> Result<(), String>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtAdapter {
+    pub address: String,
+    pub powered: bool,
+    pub discovering: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtDeviceInfo {
+    pub address: String,
+    pub name: Option<String>,
+    pub icon: Option<String>,
+    pub paired: bool,
+    pub trusted: bool,
+    pub connected: bool,
+    pub rssi: Option<i16>,
+    pub battery: Option<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct BtSnapshot {
+    pub adapter: Option<BtAdapter>,
+    pub devices: Vec<BtDeviceInfo>,
+    /// Set once if the scan process died early (its stderr or exit status).
+    pub scan_error: Option<String>,
+}
+
+/// The Bluetooth backend: the fake with `LUMEN_BT=fake` (and always off
+/// Linux), BlueZ otherwise.
+pub fn bluetooth() -> std::sync::Arc<dyn Bluetooth> {
+    #[cfg(target_os = "linux")]
+    if std::env::var("LUMEN_BT").map_or(true, |v| v != "fake") {
+        return std::sync::Arc::new(bluez::BluezBt::default());
+    }
+    std::sync::Arc::new(fake_bt::FakeBt::default())
 }

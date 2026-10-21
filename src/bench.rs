@@ -2,20 +2,31 @@
 // Right press every 150 ms for 30 s (bouncing at the ends), like holding an
 // arrow key. Prints one `[perf] {...}` line to stdout (the journal) and shows
 // the result on screen. Same maths as the M1 WebKit bench and the Slint spike,
-// so the numbers compare directly.
+// so the numbers compare directly. LUMEN_BENCH=bt runs it on Settings >
+// Bluetooth instead (rows alternate Down/Up; no animations there, so the
+// motion phase redraws continuously and counts every frame).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use slint::{ComponentHandle, RenderingState, Timer, TimerMode};
+use slint::{ComponentHandle, Model, RenderingState, Timer, TimerMode};
 
-use crate::AppWindow;
+use crate::{AppWindow, NavEvent};
 
 const IDLE: Duration = Duration::from_secs(3);
 const MOTION: Duration = Duration::from_secs(30);
 const STEP: Duration = Duration::from_millis(150);
+
+/// What the motion phase moves through.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Screen {
+    /// Home tiles: Right, bouncing at the ends.
+    Home,
+    /// Settings > Bluetooth rows: alternating Down/Up.
+    Bluetooth,
+}
 
 #[derive(Clone, Copy, PartialEq, Default)]
 enum Phase {
@@ -36,6 +47,10 @@ struct Recorder {
     last: Option<Instant>,
     was_animating: bool,
     deltas: Vec<f64>,
+    /// Motion phase redraws continuously and counts every frame, like idle.
+    /// For screens with no animations (Settings), where "frames while
+    /// animating" would record nothing.
+    force_redraw: bool,
 }
 
 impl Recorder {
@@ -189,26 +204,29 @@ impl Bench {
                     ui.window().has_active_animations(),
                 );
                 let mut r = bench.rec.borrow_mut();
+                let mut redraw = false;
                 match r.phase {
                     Phase::Off => return,
-                    Phase::Idle => {
-                        if let Some(last) = r.last {
-                            r.deltas.push((now - last).as_secs_f64() * 1000.0);
-                        }
-                        // Request the next frame outside the rendering callback.
-                        let weak_ui = weak_ui.clone();
-                        Timer::single_shot(Duration::ZERO, move || {
-                            if let Some(ui) = weak_ui.upgrade() {
-                                ui.window().request_redraw();
-                            }
-                        });
-                    }
+                    Phase::Idle => redraw = true,
+                    Phase::Motion if r.force_redraw => redraw = true,
                     Phase::Motion => {
                         if let (Some(last), true) = (r.last, r.was_animating) {
                             r.deltas.push((now - last).as_secs_f64() * 1000.0);
                         }
                         r.was_animating = ui.window().has_active_animations();
                     }
+                }
+                if redraw {
+                    if let Some(last) = r.last {
+                        r.deltas.push((now - last).as_secs_f64() * 1000.0);
+                    }
+                    // Request the next frame outside the rendering callback.
+                    let weak_ui = weak_ui.clone();
+                    Timer::single_shot(Duration::ZERO, move || {
+                        if let Some(ui) = weak_ui.upgrade() {
+                            ui.window().request_redraw();
+                        }
+                    });
                 }
                 r.last = Some(now);
             })
@@ -228,6 +246,10 @@ impl Bench {
     }
 
     pub fn run(self: &Rc<Self>, ui: &AppWindow) {
+        self.run_screen(ui, Screen::Home);
+    }
+
+    pub fn run_screen(self: &Rc<Self>, ui: &AppWindow, screen: Screen) {
         if ui.get_input_locked() {
             return; // already running
         }
@@ -246,7 +268,9 @@ impl Bench {
             };
             let idle = bench.rec.borrow_mut().stop();
             bench.rec.borrow_mut().start(Phase::Motion);
-            ui.set_perf_text("Benchmark: holding Right…".into());
+            bench.rec.borrow_mut().force_redraw = screen == Screen::Bluetooth;
+            ui.window().request_redraw();
+            ui.set_perf_text(if screen == Screen::Home { "Benchmark: holding Right…" } else { "Benchmark: Bluetooth rows…" }.into());
 
             let end = Instant::now() + MOTION;
             let dir = Cell::new(1);
@@ -256,20 +280,61 @@ impl Bench {
                     return;
                 };
                 if Instant::now() < end {
-                    if !ui.invoke_move(dir.get()) {
-                        dir.set(-dir.get());
-                        ui.invoke_move(dir.get());
+                    match screen {
+                        Screen::Home => {
+                            if !ui.invoke_move(dir.get()) {
+                                dir.set(-dir.get());
+                                ui.invoke_move(dir.get());
+                            }
+                        }
+                        Screen::Bluetooth => {
+                            // nav() ignores input while the bench holds the lock.
+                            dir.set(-dir.get());
+                            ui.set_input_locked(false);
+                            ui.invoke_nav(if dir.get() > 0 { NavEvent::Down } else { NavEvent::Up });
+                            ui.set_input_locked(true);
+                        }
                     }
                     return;
                 }
                 bench.mover.stop();
                 let motion = bench.rec.borrow_mut().stop();
-                report(&ui, &idle, &motion);
+                report(&ui, &idle, &motion, screen);
+                if screen == Screen::Bluetooth {
+                    ui.set_input_locked(false);
+                    ui.invoke_nav(NavEvent::Home); // closes Settings
+                }
                 *bench.last.borrow_mut() = last_summary(&motion);
                 ui.set_input_locked(false);
             });
         });
     }
+}
+
+/// Opens Settings on the Bluetooth panel at row level through the same `nav`
+/// the remote uses: Home, Right to the Settings tile, Select, Down to the
+/// Bluetooth panel, Select (plus a scan with LUMEN_BT=fake). False if the Settings tile isn't there.
+pub fn open_bluetooth_panel(ui: &AppWindow) -> bool {
+    let apps = ui.get_apps();
+    let Some(idx) = (0..apps.row_count()).position(|i| apps.row_data(i).is_some_and(|a| a.id == "lumen:settings")) else {
+        return false;
+    };
+    ui.invoke_nav(NavEvent::Home);
+    for _ in 0..idx {
+        ui.invoke_nav(NavEvent::Right);
+    }
+    ui.invoke_nav(NavEvent::Select);
+    // diag-panels are filled by settings-changed(true), which Select just fired.
+    for _ in 0..ui.get_diag_panels().row_count() {
+        ui.invoke_nav(NavEvent::Down);
+    }
+    ui.invoke_nav(NavEvent::Select);
+    // Rows only move when there are two or more. The fake backend gets a scan
+    // (its devices appear 2-4 s later); a real adapter is never scanned by the bench.
+    if std::env::var("LUMEN_BT").is_ok_and(|v| v == "fake") {
+        ui.invoke_bt_scan();
+    }
+    true
 }
 
 /// One line for the Settings Display panel.
@@ -285,17 +350,18 @@ fn last_summary(motion: &Option<Stats>) -> Option<(bool, String)> {
     ))
 }
 
-fn report(ui: &AppWindow, idle: &Option<Stats>, motion: &Option<Stats>) {
+fn report(ui: &AppWindow, idle: &Option<Stats>, motion: &Option<Stats>, screen: Screen) {
     let size = ui.window().size();
     let pass = motion.as_ref().is_some_and(Stats::passes);
     println!(
-        r#"[perf] {{"idle":{},"motion":{},"pass":{},"viewport":"{}x{}","scale":{}}}"#,
+        r#"[perf] {{"idle":{},"motion":{},"pass":{},"viewport":"{}x{}","scale":{}{}}}"#,
         stats_json(idle),
         stats_json(motion),
         pass,
         size.width,
         size.height,
         ui.window().scale_factor(),
+        if screen == Screen::Bluetooth { r#","screen":"bt""# } else { "" },
     );
     match motion {
         Some(m) => {

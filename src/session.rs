@@ -360,6 +360,10 @@ fn spawn(id: &str) {
 /// Mirrors the lifecycle into the tiles' `running` flag and the poller's targets.
 fn sync_tiles() {
     with_ctx(|c| {
+        crate::input::set_foreground(match c.lc.foreground() {
+            apps::Foreground::App(id) => Some(id.clone()),
+            apps::Foreground::Lumen => None,
+        });
         if let Ok(mut t) = c.targets.lock() {
             *t = c.lc.poll_targets();
         }

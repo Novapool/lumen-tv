@@ -4,6 +4,7 @@
 // the Rust data feed (src/diag.rs). Flat opaque fills only (Slint rules).
 
 import { Theme } from "theme.slint";
+import { BluetoothPanel, BtDevice, BtState } from "bluetooth.slint";
 
 export struct DiagRow {
     text: string,
@@ -23,15 +24,22 @@ export component SettingsScreen inherits Rectangle {
     in property <int> level: 0; // 0 panel list, 1 rows
     in property <int> sel-panel: 0;
     in property <int> sel-row: 0;
+    in property <int> sel-bt-btn: 0;
+    in property <[BtDevice]> bt-devices: [];
+    in property <BtState> bt-state;
+    in property <BtDevice> bt-item;
+    in property <string> bt-pending;
 
-    // The Toggles panel is built here and always comes last.
-    property <int> toggles-index: root.panels.length;
+    // Bluetooth and Toggles are built here, after the Rust-fed panels.
+    property <int> bt-index: root.panels.length;
+    property <bool> on-bt: root.sel-panel == root.bt-index;
+    property <int> toggles-index: root.panels.length + 1;
     property <bool> on-toggles: root.sel-panel == root.toggles-index;
-    property <[DiagRow]> shown-rows: root.on-toggles ? [
+    property <[DiagRow]> shown-rows: root.on-bt ? [] : root.on-toggles ? [
         { text: "Input debug", detail: root.input-debug-on ? "On" : "Off", level: root.input-debug-on ? 1 : 0 },
         { text: "Run benchmark", detail: "Select to start", level: 0 },
     ] : root.panels[root.sel-panel].rows;
-    property <bool> on-log: !root.on-toggles && root.panels[root.sel-panel].title == "Log";
+    property <bool> on-log: !root.on-toggles && !root.on-bt && root.panels[root.sel-panel].title == "Log";
     property <length> row-h: 3.2 * root.rem;
     property <length> view-h: root.height - 12.4 * root.rem;
     property <length> content-h: root.shown-rows.length * root.row-h;
@@ -59,7 +67,7 @@ export component SettingsScreen inherits Rectangle {
     }
 
     // Left column: the panels.
-    for i in root.panels.length + 1: Rectangle {
+    for i in root.panels.length + 2: Rectangle {
         x: 6 * root.rem;
         y: 9 * root.rem + i * 4.4 * root.rem;
         width: 24 * root.rem;
@@ -73,7 +81,7 @@ export component SettingsScreen inherits Rectangle {
             x: 1.6 * root.rem;
             width: parent.width - 3.2 * root.rem;
             height: parent.height;
-            text: i == root.toggles-index ? "Toggles" : root.panels[i].title;
+            text: i == root.toggles-index ? "Toggles" : i == root.bt-index ? "Bluetooth" : root.panels[i].title;
             font-size: 1.6 * root.rem;
             font-weight: i == root.sel-panel ? 700 : 500;
             color: i == root.sel-panel ? Theme.text : Theme.muted;
@@ -91,6 +99,21 @@ export component SettingsScreen inherits Rectangle {
         background: Theme.panel;
         border-radius: 0.6 * root.rem;
         clip: true;
+
+        if root.on-bt: BluetoothPanel {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            devices: root.bt-devices;
+            state: root.bt-state;
+            rem: root.rem;
+            level: root.level;
+            sel-row: root.sel-row;
+            sel-btn: root.sel-bt-btn;
+            item: root.bt-item;
+            pending: root.bt-pending;
+        }
 
         Flickable {
             interactive: false;

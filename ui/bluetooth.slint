@@ -1,0 +1,262 @@
+// Bluetooth panel of the Settings screen (UI-built, like Toggles). The struct
+// names are a contract with the Rust feed (src/bluetooth.rs). Pure view: the
+// navigation state (level, row, button) lives on AppWindow. Flat opaque fills
+// only (Slint rules).
+
+import { Theme } from "theme.slint";
+
+export struct BtDevice {
+    address: string,
+    name: string,
+    kind: string, // "gamepad", "audio", "other"
+    paired: bool,
+    connected: bool,
+    battery: int, // -1 unknown
+    busy: bool,
+}
+
+export struct BtState {
+    available: bool,
+    powered: bool,
+    scanning: bool,
+    message: string,
+    level: int, // -1 error, 0 normal, 1 good
+}
+
+// Labels and actions shared by the panel (drawing) and AppWindow (navigation).
+export global BtText {
+    pure public function scan-label(s: BtState) -> string {
+        if (!s.available) {
+            return "Bluetooth unavailable";
+        }
+        return !s.powered ? "Turn Bluetooth on" : s.scanning ? "Stop scan" : "Scan for devices";
+    }
+
+    pure public function kind-label(d: BtDevice) -> string {
+        return d.kind == "gamepad" ? "Controller" : d.kind == "audio" ? "Audio" : "Device";
+    }
+
+    pure public function status(d: BtDevice) -> string {
+        if (d.busy) {
+            return "Working…";
+        }
+        if (d.connected) {
+            return d.battery >= 0 ? "Connected · \{d.battery}%" : "Connected";
+        }
+        return d.paired ? "Paired" : "Not paired";
+    }
+
+    // Action sheet (level 2): not paired [Pair Cancel], paired [Connect|Disconnect Forget Cancel].
+    pure public function sheet-count(d: BtDevice) -> int {
+        return d.paired ? 3 : 2;
+    }
+
+    // "" = Cancel.
+    pure public function sheet-action(d: BtDevice, i: int) -> string {
+        if (!d.paired) {
+            return i == 0 ? "pair" : "";
+        }
+        return i == 0 ? (d.connected ? "disconnect" : "connect") : i == 1 ? "forget" : "";
+    }
+
+    pure public function action-label(a: string) -> string {
+        return a == "pair" ? "Pair" : a == "connect" ? "Connect" : a == "disconnect" ? "Disconnect" : a == "forget" ? "Forget" : "Cancel";
+    }
+
+    pure public function confirm-text(a: string, name: string) -> string {
+        return a == "forget" ? "Forget \{name}? It will need pairing again." : "Pair \{name}?";
+    }
+}
+
+export component BluetoothPanel inherits Rectangle {
+    in property <[BtDevice]> devices: [];
+    in property <BtState> state;
+    in property <length> rem: 16px;
+    in property <int> level: 0; // 0 panel list, 1 rows, 2 action sheet, 3 confirm
+    in property <int> sel-row: 0;
+    in property <int> sel-btn: 0;
+    in property <BtDevice> item; // snapshot the sheet/confirm act on
+    in property <string> pending: ""; // action awaiting confirmation
+
+    property <length> header-h: 5.2 * root.rem;
+    property <length> row-h: 3.2 * root.rem;
+    property <length> view-h: root.height - root.header-h;
+    property <int> row-count: root.devices.length + 1;
+    property <length> content-h: root.row-count * root.row-h;
+    property <length> max-scroll: max(0px, root.content-h - root.view-h);
+    property <int> row-shown: max(0, min(root.sel-row, root.devices.length));
+    property <bool> sheet: root.level >= 2;
+    property <int> btn-count: root.level == 3 ? 2 : BtText.sheet-count(root.item);
+
+    Text {
+        x: 1.6 * root.rem;
+        y: 0.7 * root.rem;
+        width: parent.width - 3.2 * root.rem;
+        text: !root.state.available ? "Bluetooth unavailable" : root.state.powered ? "Bluetooth on" : "Bluetooth off";
+        font-size: 1.6 * root.rem;
+        font-weight: 700;
+        color: Theme.text;
+        overflow: elide;
+    }
+
+    Text {
+        x: 1.6 * root.rem;
+        y: 2.9 * root.rem;
+        width: parent.width - 3.2 * root.rem;
+        text: root.state.message;
+        font-size: 1.3 * root.rem;
+        color: root.state.level == -1 ? Theme.fail : root.state.level == 1 ? Theme.pass : Theme.muted;
+        overflow: elide;
+    }
+
+    // Rows, clipped below the header.
+    Rectangle {
+        y: root.header-h;
+        width: parent.width;
+        height: root.view-h;
+        clip: true;
+
+        Flickable {
+            interactive: false;
+            content-width: self.width;
+            content-height: max(root.content-h, root.view-h);
+            content-y: -min(root.max-scroll, max(0px, root.level >= 1
+                ? root.row-shown * root.row-h + root.row-h / 2 - root.view-h / 2
+                : 0px));
+
+            // Row 0: scan.
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: root.row-h;
+                background: root.level >= 1 && root.row-shown == 0 ? (root.sheet ? Theme.panel-active : Theme.focus-bg) : transparent;
+                border-width: root.level == 1 && root.row-shown == 0 ? 0.18 * root.rem : 0px;
+                border-color: Theme.text;
+
+                Text {
+                    x: 1.6 * root.rem;
+                    width: parent.width - 3.2 * root.rem;
+                    height: parent.height;
+                    text: BtText.scan-label(root.state);
+                    font-size: 1.5 * root.rem;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            for d[j] in root.devices: Rectangle {
+                x: 0;
+                y: (j + 1) * root.row-h;
+                width: parent.width;
+                height: root.row-h;
+                background: root.level >= 1 && j + 1 == root.row-shown ? (root.sheet ? Theme.panel-active : Theme.focus-bg) : transparent;
+                border-width: root.level == 1 && j + 1 == root.row-shown ? 0.18 * root.rem : 0px;
+                border-color: Theme.text;
+
+                Text {
+                    x: 1.6 * root.rem;
+                    width: parent.width * 0.42;
+                    height: parent.height;
+                    text: d.name;
+                    font-size: 1.5 * root.rem;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Text {
+                    x: parent.width * 0.42 + 2.4 * root.rem;
+                    width: 9 * root.rem;
+                    height: parent.height;
+                    text: BtText.kind-label(d);
+                    font-size: 1.3 * root.rem;
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Text {
+                    x: parent.width - 1.6 * root.rem - self.width;
+                    width: 16 * root.rem;
+                    height: parent.height;
+                    text: BtText.status(d);
+                    font-size: 1.4 * root.rem;
+                    color: d.connected && !d.busy ? Theme.pass : Theme.muted;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            if root.devices.length == 0 && !root.state.scanning && root.state.available: Text {
+                x: 1.6 * root.rem;
+                y: root.row-h + 1 * root.rem;
+                width: parent.width - 3.2 * root.rem;
+                text: "No devices. Put the controller in pairing mode (hold Create + PS), then Scan.";
+                font-size: 1.3 * root.rem;
+                color: Theme.muted;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    // Action sheet (level 2) and confirm (level 3), centred over the rows.
+    if root.sheet: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: min(parent.width - 4 * root.rem, 44 * root.rem);
+        height: 15 * root.rem;
+        background: Theme.bg;
+        border-radius: 0.6 * root.rem;
+        border-width: 0.18 * root.rem;
+        border-color: Theme.muted;
+
+        Text {
+            x: 2 * root.rem;
+            y: 1.6 * root.rem;
+            width: parent.width - 4 * root.rem;
+            height: 5.4 * root.rem;
+            text: root.level == 3 ? BtText.confirm-text(root.pending, root.item.name) : root.item.name;
+            font-size: 1.7 * root.rem;
+            font-weight: 700;
+            color: Theme.text;
+            wrap: word-wrap;
+        }
+
+        Text {
+            x: 2 * root.rem;
+            y: 5.6 * root.rem;
+            width: parent.width - 4 * root.rem;
+            text: root.level == 3 ? "" : BtText.status(root.item);
+            font-size: 1.3 * root.rem;
+            color: Theme.muted;
+            overflow: elide;
+        }
+
+        for b in root.btn-count: Rectangle {
+            width: 11 * root.rem;
+            height: 3.4 * root.rem;
+            x: (parent.width - (root.btn-count * 11 + (root.btn-count - 1)) * root.rem) / 2 + b * 12 * root.rem;
+            y: parent.height - self.height - 1.8 * root.rem;
+            border-radius: 0.6 * root.rem;
+            background: b == root.sel-btn ? Theme.focus-bg : Theme.panel-active;
+            border-width: b == root.sel-btn ? 0.18 * root.rem : 0px;
+            border-color: Theme.text;
+
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.level == 3
+                    ? (b == 0 ? "Cancel" : BtText.action-label(root.pending))
+                    : BtText.action-label(BtText.sheet-action(root.item, b));
+                font-size: 1.5 * root.rem;
+                font-weight: b == root.sel-btn ? 700 : 500;
+                color: Theme.text;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

@@ -1,7 +1,13 @@
 # PlayStation controllers (hid-playstation / hid-sony). Cross = Select,
-# Circle = Back, Options = Menu, PS button = Home. The touchpad and motion
-# sensors are separate devices without face buttons, so class = "gamepad"
-# keeps them out.
+# Circle = Back, Options = Menu, PS button = Home. Checked against
+# hid-playstation's DualSense (054c:0ce6, Edge 054c:0df2): face buttons are
+# BTN_SOUTH/EAST/NORTH/WEST, Options BTN_START, Create BTN_SELECT (unmapped),
+# PS BTN_MODE; the d-pad is ABS_HAT0X/Y; sticks are ABS_X/Y and ABS_RX/RY in
+# 0..255 and triggers ABS_Z/RZ (only the left stick and d-pad navigate). The
+# name is "Sony Interactive Entertainment DualSense Wireless Controller" over
+# USB and "DualSense Wireless Controller" over Bluetooth. The touchpad
+# ("... Touchpad") and motion sensors ("... Motion Sensors") are separate
+# nodes without BTN_SOUTH, so class = "gamepad" keeps them out.
 deadzone = 0.4
 
 [match]

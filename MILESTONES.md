@@ -52,7 +52,8 @@ Fetch `manifest.json` from a configurable URL, Store screen, details screen show
 
 ## M4.5 — Controllers + Bluetooth screen
 Game controllers (PS5 DualSense first; Xbox and generic via the existing `playstation.toml` / `xbox.toml` / `gamepad.toml`) over USB and Bluetooth, and a Bluetooth panel in Settings so pairing never needs a terminal: scan, list nearby devices, pair + trust + connect, show connected/battery where available, forget. Pi side: BlueZ over D-Bus (`org.bluez`), behind a `platform` trait. Controller items parked from M2: Home on the guide/PS button, hotplug and BT disconnect/reconnect without restarting Lumen, a resting stick producing zero events over 60 s.
-**Gate:** (draft, Laith to confirm) a PS5 controller in pairing mode is paired from the Settings Bluetooth panel using only the remote or a controller; it then navigates Lumen and fires Select/Back/Home; turning it off and on reconnects without restarting Lumen; a resting stick gives zero events over 60 s; forgetting it in the panel removes the pairing.
+Scope (Laith, 2026-10-20): Laith owns only a PS5 DualSense, so controller work and checks cover the DualSense over USB and BT; `xbox.toml`/`gamepad.toml` stay as they are, untested.
+**Gate:** (confirmed by Laith 2026-10-20) a PS5 controller in pairing mode is paired from the Settings Bluetooth panel using only the remote or a controller; it then navigates Lumen and fires Select/Back/Home; turning it off and on reconnects without restarting Lumen; a resting stick gives zero events over 60 s; forgetting it in the panel removes the pairing.
 
 ## M5 — Boot session + polish
 Auto-login → labwc → Lumen only (no panel/desktop), install script (packages, input group/udev, units), Settings additions (input mappings, manifest URL, about, resolution switch 1080p60/4K60 re-applied after a TV power-cycle), input polish (whatever M3.5/M4.5 left open), visual polish pass, README (setup, add an app, add a controller, change manifest).

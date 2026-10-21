@@ -6,10 +6,11 @@
 import { Theme } from "theme.slint";
 import { App, Tile } from "tile.slint";
 import { DiagPanel, DiagRow, SettingsScreen } from "settings.slint";
+import { BluetoothPanel, BtDevice, BtState, BtText } from "bluetooth.slint";
 import { StoreItem, StoreJob, StoreScreen } from "store.slint";
 import { DetailsScreen } from "details.slint";
 
-export { DiagPanel, DiagRow, StoreItem, StoreJob }
+export { BtDevice, BtState, DiagPanel, DiagRow, StoreItem, StoreJob }
 
 // The normalized input events (Rust: input::Action).
 export enum NavEvent { up, down, left, right, select, back, home, menu, play-pause }
@@ -46,6 +47,20 @@ export component AppWindow inherits Window {
     property <int> s-level: 0;
     property <int> s-panel: 0;
     property <int> s-row: 0;
+    property <int> s-bt-btn: 0;
+    // Bluetooth contract (Rust feeds bt-devices/bt-state, see src/bluetooth.rs).
+    // s-level 2 = action sheet, 3 = confirm (Bluetooth panel only).
+    in property <[BtDevice]> bt-devices: [];
+    in property <BtState> bt-state;
+    // The device the sheet/confirm act on, copied when the sheet opens: a list
+    // refresh can't retarget the action. bt-pending = action awaiting confirm.
+    property <BtDevice> bt-item;
+    property <string> bt-pending: "";
+    property <bool> bt-active: false; // bt-changed(true) sent and not yet undone
+    callback bt-changed(bool); // panel opened or closed: Rust starts/stops polling and scanning
+    callback bt-scan(); // toggles the scan; powers the adapter on when it's off
+    callback bt-action(string, string); // (address, "pair"|"connect"|"disconnect"|"forget")
+    callback nav-trace(string); // one human line after every nav(); Rust prints it only while input debug is on
 
     // Store contract (Rust feeds these, see src/store.rs). Navigation state:
     // st-level 0 list, 1 details, 2 confirm, 3 progress.
@@ -127,9 +142,93 @@ export component AppWindow inherits Window {
         return true;
     }
 
+    // Tells Rust when the Bluetooth panel is showing (selected in the panel
+    // list, or any deeper level) so it polls and scans only then.
+    function bt-sync() {
+        if ((root.settings-open && root.s-panel == root.diag-panels.length) != root.bt-active) {
+            root.bt-active = !root.bt-active;
+            root.bt-changed(root.bt-active);
+        }
+    }
+
     function close-settings() {
         root.settings-open = false;
+        root.s-level = 0;
+        root.bt-sync();
         root.settings-changed(false);
+    }
+
+    // Keep the Bluetooth row inside the list when devices drop out.
+    changed bt-devices => {
+        if (root.s-level == 1 && root.s-panel == root.diag-panels.length) {
+            root.s-row = max(0, min(root.bt-devices.length, root.s-row));
+        }
+    }
+
+    function bt-back-to-rows() {
+        root.s-level = 1;
+        root.s-bt-btn = 0;
+    }
+
+    // Bluetooth levels 1..3. Up/Down move rows; 2 = action sheet; 3 = confirm.
+    function bt-nav(e: NavEvent) {
+        if (root.s-level == 1) {
+            if (e == NavEvent.back || e == NavEvent.left) {
+                root.s-level = 0;
+            } else if (e == NavEvent.up) {
+                root.s-row = max(0, min(root.bt-devices.length, root.s-row) - 1);
+            } else if (e == NavEvent.down) {
+                root.s-row = max(0, min(root.bt-devices.length, root.s-row + 1));
+            } else if (e == NavEvent.select) {
+                root.s-row = max(0, min(root.bt-devices.length, root.s-row));
+                if (root.s-row == 0) {
+                    if (root.bt-state.available) {
+                        root.bt-scan();
+                    }
+                } else if (!root.bt-devices[root.s-row - 1].busy) {
+                    root.bt-item = root.bt-devices[root.s-row - 1];
+                    root.s-level = 2;
+                    root.s-bt-btn = 0;
+                }
+            }
+        } else if (root.s-level == 2) {
+            if (e == NavEvent.back) {
+                root.bt-back-to-rows();
+            } else if (e == NavEvent.left) {
+                root.s-bt-btn = max(0, root.s-bt-btn - 1);
+            } else if (e == NavEvent.right) {
+                root.s-bt-btn = min(BtText.sheet-count(root.bt-item) - 1, root.s-bt-btn + 1);
+            } else if (e == NavEvent.select) {
+                if (BtText.sheet-action(root.bt-item, root.s-bt-btn) == "") {
+                    root.bt-back-to-rows();
+                } else if (BtText.sheet-action(root.bt-item, root.s-bt-btn) == "pair" || BtText.sheet-action(root.bt-item, root.s-bt-btn) == "forget") {
+                    root.bt-pending = BtText.sheet-action(root.bt-item, root.s-bt-btn);
+                    root.s-level = 3;
+                    root.s-bt-btn = 0; // Cancel first
+                } else {
+                    root.bt-action(root.bt-item.address, BtText.sheet-action(root.bt-item, root.s-bt-btn));
+                    root.bt-back-to-rows();
+                }
+            }
+        } else if (root.s-level == 3) {
+            // [Cancel, confirm]; Cancel is focused by default.
+            if (e == NavEvent.back) {
+                root.s-level = 2;
+                root.s-bt-btn = 0;
+            } else if (e == NavEvent.left) {
+                root.s-bt-btn = 0;
+            } else if (e == NavEvent.right) {
+                root.s-bt-btn = 1;
+            } else if (e == NavEvent.select) {
+                if (root.s-bt-btn == 1) {
+                    root.bt-action(root.bt-item.address, root.bt-pending);
+                    root.bt-back-to-rows();
+                } else {
+                    root.s-level = 2;
+                    root.s-bt-btn = 0;
+                }
+            }
+        }
     }
 
     function close-store() {
@@ -219,21 +318,27 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Rows in a panel; the Toggles panel (always last, built by the UI) has 2.
+    // Rows in a panel; Bluetooth (index panels.length) and Toggles (index
+    // panels.length + 1, always last) are built by the UI. Bluetooth is a
+    // placeholder: one scan row plus the devices.
     function settings-rows(p: int) -> int {
-        return p >= root.diag-panels.length ? 2 : root.diag-panels[p].rows.length;
+        return p > root.diag-panels.length ? 2 : p == root.diag-panels.length ? root.bt-devices.length + 1 : root.diag-panels[p].rows.length;
     }
 
     function settings-nav(e: NavEvent) {
         if (e == NavEvent.home) {
             root.close-settings();
+        } else if (root.s-level > 0 && root.s-panel == root.diag-panels.length) {
+            root.bt-nav(e);
         } else if (root.s-level == 0) {
             if (e == NavEvent.back) {
                 root.close-settings();
             } else if (e == NavEvent.up) {
                 root.s-panel = max(0, root.s-panel - 1);
+                root.bt-sync();
             } else if (e == NavEvent.down) {
-                root.s-panel = min(root.diag-panels.length, root.s-panel + 1);
+                root.s-panel = min(root.diag-panels.length + 1, root.s-panel + 1);
+                root.bt-sync();
             } else if ((e == NavEvent.right || e == NavEvent.select) && root.settings-rows(root.s-panel) > 0) {
                 root.s-level = 1;
                 // Log: newest line is last, start there. Others: first row.
@@ -246,7 +351,7 @@ export component AppWindow inherits Window {
                 root.s-row = max(0, root.s-row - 1);
             } else if (e == NavEvent.down) {
                 root.s-row = max(0, min(root.settings-rows(root.s-panel) - 1, root.s-row + 1));
-            } else if (e == NavEvent.select && root.s-panel >= root.diag-panels.length) {
+            } else if (e == NavEvent.select && root.s-panel > root.diag-panels.length) {
                 if (root.s-row == 0) {
                     root.toggle-input-debug();
                 } else {
@@ -257,7 +362,29 @@ export component AppWindow inherits Window {
         }
     }
 
+    // One line describing where focus is now, for the input-debug log.
+    function trace-line(e: NavEvent) -> string {
+        if (root.settings-open) {
+            if (root.s-level == 3) {
+                return "bt confirm \{root.bt-pending} \{root.bt-item.address} btn=\{root.s-bt-btn == 0 ? "Cancel" : BtText.action-label(root.bt-pending)}";
+            }
+            if (root.s-level == 2) {
+                return "bt sheet \{root.bt-item.address} btn=\{BtText.action-label(BtText.sheet-action(root.bt-item, root.s-bt-btn))}";
+            }
+            return "settings panel=\{root.s-panel == root.diag-panels.length ? "Bluetooth" : root.s-panel > root.diag-panels.length ? "Toggles" : root.diag-panels[root.s-panel].title} level=\{root.s-level} row=\{root.s-row} \"\{root.s-level == 0 ? "" : root.s-panel == root.diag-panels.length ? (root.s-row == 0 ? BtText.scan-label(root.bt-state) : root.bt-devices[root.s-row - 1].name) : root.s-panel > root.diag-panels.length ? (root.s-row == 0 ? "Input debug" : "Run benchmark") : root.diag-panels[root.s-panel].rows[root.s-row].text}\"";
+        }
+        if (root.store-open) {
+            return "store level=\{root.st-level} row=\{root.st-row}";
+        }
+        return "home focus=\{root.apps[root.focused].id}";
+    }
+
     public function nav(e: NavEvent) {
+        root.nav-step(e);
+        root.nav-trace(root.trace-line(e));
+    }
+
+    function nav-step(e: NavEvent) {
         if (root.input-locked) {
             return;
         }
@@ -280,6 +407,7 @@ export component AppWindow inherits Window {
                 root.s-panel = 0;
                 root.s-row = 0;
                 root.settings-open = true;
+                root.bt-sync();
                 root.settings-changed(true);
             } else if (root.apps[root.focused].id == "lumen:store") {
                 // A job that is running (or finished while the store was closed)
@@ -441,6 +569,11 @@ export component AppWindow inherits Window {
         level: root.s-level;
         sel-panel: root.s-panel;
         sel-row: root.s-row;
+        sel-bt-btn: root.s-bt-btn;
+        bt-devices: root.bt-devices;
+        bt-state: root.bt-state;
+        bt-item: root.bt-item;
+        bt-pending: root.bt-pending;
     }
 
     if root.store-open && (root.st-level == 0 || root.st-level == 3): StoreScreen {

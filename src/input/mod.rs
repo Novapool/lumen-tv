@@ -21,6 +21,21 @@ use std::time::Instant;
 
 use serde::Deserialize;
 
+static FOREGROUND: Mutex<Option<String>> = Mutex::new(None);
+
+/// The registry id of the app in front (None = Lumen), kept current by the
+/// session for the held-PS rule on the input thread.
+pub fn set_foreground(id: Option<String>) {
+    if let Ok(mut f) = FOREGROUND.lock() {
+        *f = id;
+    }
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn foreground() -> Option<String> {
+    FOREGROUND.lock().ok().and_then(|f| f.clone())
+}
+
 /// What Settings shows about one open input device.
 #[derive(Clone, Debug)]
 pub struct DeviceStatus {

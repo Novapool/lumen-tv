@@ -16,7 +16,7 @@ use evdev::raw_stream::RawDevice;
 use evdev::{AbsoluteAxisCode, EventType, KeyCode};
 use inotify::{Inotify, WatchMask};
 
-use super::dispatch::Dispatcher;
+use super::dispatch::{back_long_press_is_home, home_needs_hold, Dispatcher, SourceClass};
 use super::mapping::{self, DeviceInfo, DeviceMap, EV_ABS, EV_KEY};
 use super::{Action, DeviceStatus, Status};
 
@@ -162,6 +162,7 @@ fn read(mut dev: RawDevice, path: PathBuf, tx: Sender<Msg>, open: Open) {
 struct Device {
     name: String,
     map: DeviceMap,
+    class: SourceClass,
 }
 
 /// Edits the device's status entry (if it has one) under the lock.
@@ -197,6 +198,9 @@ fn run(
                 on_action(action, &d.name);
             }
         }
+        if dispatch.take_held_home_fired() {
+            println!("[input] home (held PS in steamlink)");
+        }
         match msg {
             Ok(Msg::Added(path, info)) => {
                 let chosen = mapping::choose(&mappings, &info);
@@ -224,6 +228,7 @@ fn run(
                             path,
                             Device {
                                 map: m.for_device(&info),
+                                class: if mapping::is_gamepad(&info) { SourceClass::Gamepad } else { SourceClass::Other },
                                 name: info.name,
                             },
                         );
@@ -246,7 +251,11 @@ fn run(
                 };
                 for (action, pressed) in d.map.translate(kind, code, value) {
                     let out = if pressed {
-                        dispatch.press(&path, action, now)
+                        // One foreground lookup per press decides both rules.
+                        let fg = super::foreground();
+                        let hold = action == Action::Home && home_needs_hold(d.class, fg.as_deref());
+                        let back_home = back_long_press_is_home(d.class, fg.as_deref());
+                        dispatch.press_rules(&path, action, now, hold, back_home)
                     } else {
                         dispatch.release(&path, action, now)
                     };

@@ -6,6 +6,9 @@
 mod apps;
 mod bench;
 mod bake;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod bluetooth;
+mod btfeed;
 mod diag;
 mod home;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -207,10 +210,41 @@ fn store_check(source: Option<String>) -> ! {
     std::process::exit(i32::from(!m.errors.is_empty() || m.fatal));
 }
 
+/// `lumen-tv --bt-check`: one read-only GetManagedObjects through the parser;
+/// prints the adapter and every device, then the rows the panel would show.
+/// Exit 0 if BlueZ answered, else 1. No UI, nothing is scanned or changed.
+fn bt_check() -> ! {
+    let backend = platform::bluetooth();
+    match backend.snapshot() {
+        Ok(s) => {
+            match &s.adapter {
+                Some(a) => println!("adapter: {} powered={} discovering={}", a.address, a.powered, a.discovering),
+                None => println!("adapter: none"),
+            }
+            for d in &s.devices {
+                println!(
+                    "device: {} name={:?} icon={:?} paired={} connected={} rssi={:?} battery={:?}",
+                    d.address, d.name, d.icon, d.paired, d.connected, d.rssi, d.battery
+                );
+            }
+            let rows = bluetooth::rows(&s, None, &[]);
+            println!("{} devices, {} shown", s.devices.len(), rows.len());
+            std::process::exit(i32::from(s.adapter.is_none()));
+        }
+        Err(e) => {
+            println!("snapshot error: {e}");
+            println!("({})", bluetooth::friendly_error(&e));
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("--store-check") {
-        store_check(args.next());
+    match args.next().as_deref() {
+        Some("--store-check") => store_check(args.next()),
+        Some("--bt-check") => bt_check(),
+        _ => {}
     }
     logtail::install();
     // The compositor tells windows apart by app_id: this is how Lumen finds
@@ -260,6 +294,14 @@ fn main() -> Result<(), slint::PlatformError> {
     let input_status = input::Status::default();
     let input_debug = Arc::new(AtomicBool::new(std::env::var("LUMEN_INPUT_DEBUG").is_ok_and(|v| v == "1")));
 
+    // One human line per navigation step (focus, row, button), only while input debug is on.
+    let debug = input_debug.clone();
+    ui.on_nav_trace(move |line| {
+        if debug.load(Ordering::Relaxed) {
+            println!("[nav] {line}");
+        }
+    });
+
     #[cfg(target_os = "linux")]
     {
         let front = session::start(&ui, entries);
@@ -281,6 +323,7 @@ fn main() -> Result<(), slint::PlatformError> {
         Sources { bench: bench.clone(), status: input_status, debug: input_debug, randr: Default::default() },
     );
     storefeed::wire(&ui);
+    btfeed::wire(&ui);
     let weak = ui.as_weak();
     let b = bench.clone();
     ui.on_bench(move || {
@@ -290,14 +333,30 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     // LUMEN_BENCH=1 (in ~/.config/lumen-tv/env, which lumen-test.service loads)
-    // starts the bench 3 s after launch.
-    if std::env::var("LUMEN_BENCH").is_ok_and(|v| v == "1") {
-        let weak = ui.as_weak();
-        Timer::single_shot(Duration::from_secs(3), move || {
-            if let Some(ui) = weak.upgrade() {
-                bench.run(&ui);
-            }
-        });
+    // starts the bench 3 s after launch. LUMEN_BENCH=bt does it with Settings
+    // open on the Bluetooth panel (rows alternate Down/Up).
+    match std::env::var("LUMEN_BENCH").as_deref() {
+        Ok("1") => {
+            let weak = ui.as_weak();
+            Timer::single_shot(Duration::from_secs(3), move || {
+                if let Some(ui) = weak.upgrade() {
+                    bench.run(&ui);
+                }
+            });
+        }
+        Ok("bt") => {
+            let weak = ui.as_weak();
+            Timer::single_shot(Duration::from_secs(3), move || {
+                if let Some(ui) = weak.upgrade() {
+                    if bench::open_bluetooth_panel(&ui) {
+                        bench.run_screen(&ui, bench::Screen::Bluetooth);
+                    } else {
+                        println!("[perf] bt bench: could not open the Bluetooth panel");
+                    }
+                }
+            });
+        }
+        _ => {}
     }
 
     let result = ui.run();

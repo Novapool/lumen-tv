@@ -60,6 +60,11 @@ impl Class {
     }
 }
 
+/// A gamepad is a device with BTN_SOUTH (the same test the mapping files use).
+pub fn is_gamepad(dev: &DeviceInfo) -> bool {
+    Class::of(dev) == Some(Class::Gamepad)
+}
+
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct MatchRules {
@@ -376,6 +381,97 @@ mod tests {
         assert_eq!(d.translate(EV_ABS, ABS_X, -1), vec![(Action::Up, true)]);
         assert_eq!(d.translate(EV_ABS, ABS_X, 0), vec![(Action::Up, false)]);
         assert_eq!(d.translate(EV_ABS, ABS_X, 1), vec![(Action::Down, true)]);
+    }
+
+    // A DualSense as hid-playstation reports it: sticks and triggers 0..255,
+    // d-pad on the hat axes.
+    const DS_USB: &str = "Sony Interactive Entertainment DualSense Wireless Controller";
+    const DS_BT: &str = "DualSense Wireless Controller";
+
+    fn code(name: &str) -> u16 {
+        fake_resolve(name).unwrap().1
+    }
+
+    fn dualsense(name: &str) -> DeviceInfo {
+        let keys = ["BTN_SOUTH", "BTN_EAST", "BTN_NORTH", "BTN_WEST", "BTN_START", "BTN_SELECT", "BTN_MODE"].map(code).to_vec();
+        let mut axes: Vec<_> = ["ABS_X", "ABS_Y", "ABS_RX", "ABS_RY", "ABS_Z", "ABS_RZ"].map(|n| (code(n), 0, 255)).to_vec();
+        axes.extend(["ABS_HAT0X", "ABS_HAT0Y"].map(|n| (code(n), -1, 1)));
+        DeviceInfo { name: name.into(), vendor: 0x054c, product: 0x0ce6, keys, axes }
+    }
+
+    fn dualsense_map(name: &str) -> DeviceMap {
+        let m = shipped();
+        let dev = dualsense(name);
+        choose(&m, &dev).expect("DualSense picks a file").for_device(&dev)
+    }
+
+    #[test]
+    fn dualsense_main_node_picks_playstation_over_usb_and_bluetooth() {
+        let m = shipped();
+        for name in [DS_USB, DS_BT] {
+            assert_eq!(choose(&m, &dualsense(name)).map(|m| m.file.as_str()), Some("playstation.toml"), "{name}");
+        }
+        // The Edge has another product id and the same vendor.
+        let mut edge = dualsense("DualSense Edge Wireless Controller");
+        edge.product = 0x0df2;
+        assert_eq!(choose(&m, &edge).map(|m| m.file.as_str()), Some("playstation.toml"));
+    }
+
+    #[test]
+    fn dualsense_touchpad_and_motion_nodes_get_no_mapping() {
+        let m = shipped();
+        let touchpad_keys = ["BTN_LEFT", "BTN_TOUCH", "BTN_TOOL_FINGER", "BTN_TOOL_DOUBLETAP"].map(code).to_vec();
+        let mt: Vec<_> = ["ABS_X", "ABS_Y", "ABS_MT_SLOT", "ABS_MT_TRACKING_ID", "ABS_MT_POSITION_X", "ABS_MT_POSITION_Y"]
+            .map(|n| (code(n), 0, 1919))
+            .to_vec();
+        let motion_axes: Vec<_> = ["ABS_X", "ABS_Y", "ABS_Z", "ABS_RX", "ABS_RY", "ABS_RZ"].map(|n| (code(n), -32768, 32767)).to_vec();
+        for name in [DS_USB, DS_BT] {
+            let touchpad = DeviceInfo { name: format!("{name} Touchpad"), vendor: 0x054c, product: 0x0ce6, keys: touchpad_keys.clone(), axes: mt.clone() };
+            let motion = DeviceInfo { name: format!("{name} Motion Sensors"), vendor: 0x054c, product: 0x0ce6, keys: vec![], axes: motion_axes.clone() };
+            assert!(choose(&m, &touchpad).is_none(), "{}", touchpad.name);
+            assert!(choose(&m, &motion).is_none(), "{}", motion.name);
+        }
+    }
+
+    #[test]
+    fn dualsense_buttons_and_dpad_map_to_actions() {
+        let mut d = dualsense_map(DS_BT);
+        assert_eq!(d.translate(EV_KEY, code("BTN_MODE"), 1), vec![(Action::Home, true)]);
+        assert_eq!(d.translate(EV_KEY, code("BTN_MODE"), 0), vec![(Action::Home, false)]);
+        assert_eq!(d.translate(EV_KEY, code("BTN_SOUTH"), 1), vec![(Action::Select, true)]);
+        assert_eq!(d.translate(EV_KEY, code("BTN_EAST"), 1), vec![(Action::Back, true)]);
+        assert_eq!(d.translate(EV_KEY, code("BTN_START"), 1), vec![(Action::Menu, true)]);
+        // Square, Triangle and Create do nothing.
+        for n in ["BTN_WEST", "BTN_NORTH", "BTN_SELECT"] {
+            assert_eq!(d.translate(EV_KEY, code(n), 1), vec![], "{n}");
+        }
+        let (hx, hy) = (code("ABS_HAT0X"), code("ABS_HAT0Y"));
+        assert_eq!(d.translate(EV_ABS, hx, 1), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, hx, 0), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, hx, -1), vec![(Action::Left, true)]);
+        assert_eq!(d.translate(EV_ABS, hx, 0), vec![(Action::Left, false)]);
+        assert_eq!(d.translate(EV_ABS, hy, -1), vec![(Action::Up, true)]);
+        assert_eq!(d.translate(EV_ABS, hy, 0), vec![(Action::Up, false)]);
+        assert_eq!(d.translate(EV_ABS, hy, 1), vec![(Action::Down, true)]);
+    }
+
+    #[test]
+    fn dualsense_stick_at_rest_and_drift_never_presses() {
+        let mut d = dualsense_map(DS_USB);
+        let (x, y) = (code("ABS_X"), code("ABS_Y"));
+        // Resting 120..136 around the 0..255 centre, many updates.
+        for i in 0..2000 {
+            let v = 120 + (i * 7) % 17;
+            assert_eq!(d.translate(EV_ABS, x, v), vec![], "x {v}");
+            assert_eq!(d.translate(EV_ABS, y, 136 - (i * 5) % 17), vec![], "y at update {i}");
+        }
+        // A real push still works: 255 is Right, back to rest releases.
+        assert_eq!(d.translate(EV_ABS, x, 255), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, x, 128), vec![(Action::Right, false)]);
+        // The right stick, triggers and a DualSense without ABS_RX mapping stay silent.
+        for n in ["ABS_RX", "ABS_RY", "ABS_Z", "ABS_RZ"] {
+            assert_eq!(d.translate(EV_ABS, code(n), 255), vec![], "{n}");
+        }
     }
 
     #[test]
