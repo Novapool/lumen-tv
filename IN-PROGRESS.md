@@ -112,6 +112,8 @@ Decisions so far:
 
 - DualSense reconnect: once at the M4.5 TV test, the first PS press after turning the pad off never reached the Pi (no BlueZ log); the next presses reconnected in 5-6 s. Watch it; an M5 option is asking BlueZ to connect known pads.
 
+- Stick rebound (Laith, 2026-10-20): flicking the left stick right/left on Home moves focus, then the stick's spring-back overshoots past centre and fires the opposite direction, so focus snaps back. Not fixed; scheduled for M5 input polish (opposite-direction lockout ~150 ms after release, or hysteresis on release).
+
 ## Blockers
 - (none)
 - Bench is thermally sensitive: the Pi has no fan; after long builds it throttles at 75-82 C and 4K drops to 45-55 fps (a cool 4K run passed at 60). Let it cool before benching.
