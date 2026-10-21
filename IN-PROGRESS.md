@@ -1,14 +1,14 @@
 # In Progress — Lumen (lumen-tv)
 
-Last updated: 2026-10-19
+Last updated: 2026-10-20
 
 ## Where we are
-Lumen's UI is Slint (femtovg), 60 fps at 1080p60 and 4K60 on the TV. M3 done (2026-10-13): app registry with icon tiles; Jellyfin (Chromium kiosk), Steam Link and Kodi launch from Lumen; keep-alive/exclusive policies; Home works from any app and pauses its media; auto-return when an app dies. M3.5 done (2026-10-19): Settings/diagnostics screen (Display, Input, Apps, Running, Log, Toggles) and the LG TV remote drives everything on its own (red = Home). **Next: M4 Store.** Then M4.5 controllers + Bluetooth pairing screen → M5 boot session. Kodi still boots by default; Lumen runs from `lumen-test.service`.
+Lumen's UI is Slint (femtovg), 60 fps at 1080p60 and 4K60 on the TV. Done: M3 (registry, icon tiles, Jellyfin/Steam Link/Kodi launch, Home from any app), M3.5 (Settings/diagnostics; the LG remote drives everything, red = Home) and M4 (2026-10-20): the Store tile lists `store/manifest.json` from GitHub, shows every command, installs/uninstalls flatpak `--user` apps with live progress, and Home updates without a restart. **Next: M4.5 controllers + Bluetooth pairing screen.** Then the root install helper (PIN) and M5 boot session (with a 1080p/4K switch). Kodi still boots by default; Lumen runs from `lumen-test.service`.
 
 ## Active Plan
-Build M4 → M4.5 → M5 in order (see MILESTONES.md), stopping after each one for a TV test.
+Build M4.5 → root helper → M5 in order (see MILESTONES.md), stopping after each one for a TV test.
 
-Layout (as built; `store.rs`, `store.slint`/`details.slint` arrive in M4):
+Layout (as built):
 ```
 lumen-tv/
   Cargo.toml, build.rs     one crate; slint-build compiles ui/
@@ -20,14 +20,17 @@ lumen-tv/
     bake.rs, bench.rs      CPU-baked images; LUMEN_BENCH frame-time bench + FpsMeter
     diag.rs, logtail.rs    Settings panel data; capture of Lumen's own log for the Log panel
     reclaim.rs             re-claim the CEC remote after an app exits (debounced)
+    home.rs                Home tiles/heroes; live reload from the registry
+    store.rs, storefeed.rs Store: manifest, step runner, receipts; Slint wiring
     input/                 evdev reader, hotplug, mapping loader, repeat/deadzone, dispatch
     platform/mod.rs        traits: Windows, Tv
     platform/pi.rs         CEC remote claim (cec-ctl) + OK/Back keymap remap
     platform/toplevel.rs   labwc wlr-foreign-toplevel
-  ui/                      app.slint (screens, focus; Store tile does nothing yet), settings.slint, tile.slint, theme.slint
+  ui/                      app.slint (screens, focus), settings.slint, store.slint, details.slint, tile.slint, theme.slint
   config/input/            keyboard, xbox, playstation, gamepad, cec-remote (.toml)
   config/apps/             default registry entries; config/kodi-tile = Kodi tile launcher (CEC off)
   examples/                fake-pad.rs, press.rs, toplevels.rs (gate tools)
+  store/manifest.json      the Store's app list (served from GitHub raw)
   session/                 labwc rc.xml, start-lumen.sh, lumen-test.service, sudoers
   scripts/pi-build.sh      rsync to pitv + cargo build --release there
 ```
@@ -67,6 +70,11 @@ Decisions so far:
 - (2026-10-13) Kodi tile runs through `~/.local/bin/kodi-tile` (own home `~/.kodi-tile`, userdata linked to `~/.kodi`, CEC peripheral forced off) so Lumen keeps the remote; the boot Kodi is untouched. After any app exits Lumen re-claims the remote + active source (`src/reclaim.rs`). Backup `~/.kodi-backup-20261013`.
 - (2026-10-13) Plex removed (Laith): Jellyfin covers it.
 
+- (2026-10-20) Store: manifest `store/manifest.json` (version 1; each app = registry fields + `description`, `detail`, `install`, `uninstall`, `root`), fetched from `LUMEN_STORE_URL` (default `https://raw.githubusercontent.com/Novapool/lumen-tv/main/store/manifest.json`; a `/path` or `file://` reads from disk). `lumen-tv --store-check [source]` prints it. Steps run as `sh -c` as laith, one job at a time, stop at the first failure, no rollback. Registry TOML + receipt (`~/.config/lumen-tv/store/<id>.json`, keeps the uninstall steps used) are written only after every step passes.
+- (2026-10-20) Root policy (Laith): the Store runs user-level steps only (flatpak `--user`); `root: true` entries show their commands to run over SSH. Everything is uninstallable, Jellyfin included.
+- (2026-10-20) Lumen clears ambient capabilities for every child (`apps::drop_ambient_caps`): lumen-test's PAM session gives it CAP_WAKE_ALARM, and bwrap (Flatpak) refuses to run with it.
+- (2026-10-20) KolourPaint (the M4 gate app): app_id `org.kde.kolourpaint`, no `process` needed (Lumen tracks bwrap; the app is its child), icon from `~/.local/share/flatpak/exports`.
+
 ## Slint rules (from the spike)
 - Never animate a drop shadow's size or blur: the blur re-renders every frame (56.5 fps, 5.2% slow). Keep the shadow box fixed and fade it with `opacity`. Slint draws no shadow for an unfilled Rectangle, so fill it and hide it behind the face.
 - Slint redraws only on change: frame stats count only frames while something is animating.
@@ -78,41 +86,7 @@ Decisions so far:
 - `if`-created drop-shadow elements re-blur every time they are created; use one fixed shadow Image and fade it.
 
 ## Current Work
-- Job 1.0 done: Slint store contract (StoreItem/StoreJob, StoreScreen/DetailsScreen placeholders, AppWindow store props/callbacks, open/close only), `src/store.rs` stub, `mod store;` in main.rs. Mac cargo check/test pass (115 passed, 2 ignored); GUI not run.
-- M4 Store planned (2026-10-19) in `AGENT_JOBS.md`. Phases: 0 decisions with Laith (D1-D7), 1A Slint contract stub, 1B UI ∥ store core ∥ live Home reload, 2 store wiring + first Pi build, 3 review/simplify/tests (+ optional O.1 mode fix), 4 automated Pi checks, 5 Gate at the TV. Phase 0 answers (Laith, 2026-10-19):
-  - D1 (a): flatpak `--user` only; `root: true` entries show their commands with "run over SSH" and no Run button. A root helper with an on-screen PIN becomes its own milestone later (scope change in MILESTONES.md).
-  - D2: KolourPaint (`org.kde.kolourpaint`, Flathub, runtime org.kde.Platform 6.10 = already installed, 1.3 MB). KCalc was the pick but now needs runtime 6.11 (~1 GB extra). Re-check the runtime with `flatpak remote-info --user flathub org.kde.kolourpaint` before Phase 4.
-  - D3 (a): "Store test (fails)" (`org.lumen.DoesNotExist`) lives in the public `store/manifest.json`.
-  - D4: push `store/manifest.json` to origin/main before Phase 4 (main conversation shows the commit first); `LUMEN_STORE_URL` overrides for local tests.
-  - D5: no rollback (recommended default, not objected to).
-  - D6: drop O.1. The 4K-after-power-cycle fix moves to M5 as a resolution switch in Settings (scope change).
-  - D7: still pending: Laith OKs the exact manifest commands and the lumen-test stop/start before Phase 4.
-- Job 1.1 done (2026-10-19, Mac check/test pass, GUI not run): Store list/progress in `StoreScreen` (levels 0, 3), Details/Confirm in `DetailsScreen` (levels 1, 2; shown from app.slint, since details.slint imports store.slint). Full `store-nav`; Confirm focuses Cancel. Open: a very long command list on Details isn't scrollable; text sizes unchecked at the TV.
-- Job 1.3 done (2026-10-19, Mac check/test pass, 7 new planner tests; reload never run, Linux code never compiled): `src/home.rs` (`init`, `bake_tiles`, `reload -> Reloaded`, `with`), `Lifecycle::set_specs`/`close`, `session::set_entries`/`close_app`; Settings reads Home through `home::with`. For 2.1: after a reload the focused tile's hero backdrop (`hero-a`/`hero-b`) stays stale until the next focus move; re-assign it after `apps` is replaced.
-- Job 1.2 done (2026-10-19, Mac 139 tests pass): `src/store.rs` + registry `write_entry`/`remove_entry`, `store/manifest.json` (jellyfin, steamlink root, kolourpaint, store-test). Contract deviations for 2.1: `run_job(action, app, on_event) -> Result<(), String>` reads `store::source()`; `JobEvent::Replace(String)` overwrites the last line (flatpak `\r`); `Manifest.fatal`; receipt/status fns take explicit dirs; one job at a time. To confirm on the Pi: KolourPaint app_id (`org.kde.kolourpaint` is a guess), whether `process` is needed, icon lookup from flatpak exports.
-- Job 2.1 done (2026-10-19): `src/storefeed.rs` (`wire`), `--store-check [source]` in main.rs, hero fix (`changed apps` in app.slint). Mac 139 tests, Pi release build OK with no Linux-only compile errors, Pi 144 tests pass, `--store-check` on the Pi manifest: 4 apps, 0 errors, exit 0. KolourPaint runtime still org.kde.Platform 6.10. Unverified at runtime (lumen-test not restarted, GUI never run): the whole Store UI flow, reload live on the TV, hero refresh after reload, uninstall of a running app, `session::close_app`, real flatpak install, KolourPaint app_id/process/icon. Settings "Store source" row skipped (M5).
-- Job 3.3 done: 5 tests added (non-string step, registry/receipt write failure, corrupt receipt, invalid id); Mac 144 pass; no bugs found.
-- **M4 review (Job 3.1, 2026-10-19). Verdict: patch and ship, no High.** Every run path goes through Confirm; shown = run; failed install writes nothing; no UI state touched off-thread.
-  - M1 installed `launch`/`url` never shown on Details/Confirm (a manifest could hide a command there). M2 uninstall starts before the app has exited (close_app only schedules SIGTERM; KolourPaint has no `process`); close also runs before `check`. M3 a step leaving a background child holding stdout hangs the job forever (no timeout, no cancel). M4 Confirm is bound live to `store-items[st-row]`: an earlier job finishing can flip Install to Uninstall under the cursor. M5 reopening the store mid-job resets to the list; a refused run still jumps to progress. M6 a partly failed uninstall never reloads Home; `remove_entry` Ok(false) still reports Done.
-  - Low: L1 Details doesn't scroll long command lists; L2 stdout/stderr Replace clobber each other; L3 a tile can launch mid-uninstall; L4 "Step 1 of 0". FYI: uninstalling Jellyfin from the Store deletes the seeded TOML for good; reload re-bakes all tiles on the UI thread (hitch at 4K).
-- **M4 simplify (Job 3.2):** two job-running guards (UI state + static BUSY) clear at different times → a fast re-run can be refused; drop `ItemStatus`/`status()`, stale `allow(dead_code)`, `Reloaded.errors`, `Feed.errors`; `read_receipt` should need only `app`; `last-row` property in store-nav; `first-line` in store.slint is always 0.
-- Job 3.4 done (2026-10-19): M1-M6, L1, L2, L4 and the simplify list applied (L3 skipped); `StoreItem.launch` added; Details/Confirm scroll with Up/Down and bind to a snapshot (`st-item`); one job guard (storefeed `job.state == 1`; `BUSY` removed); `run_job(action, app, prepare, on_event)` waits up to 8 s for the closed app's PIDs; steps share one pipe, group-kill after 1 s grace, 15 min timeout. Mac 152 tests, Pi 158 pass, `--store-check` exit 0. GUI/runtime still unverified: Details scroll + wrapped-text layout height, uninstall wait on a real app (KolourPaint `process` not set), reopen-mid-job.
-- **Job 4.1 automated Pi checks (tester, 2026-10-19/20; Laith's OK for lumen-test swap and KolourPaint install/uninstall). Verdict: FAIL.** KolourPaint never launches from its tile (A7), so the uninstall wait path (A8) was not exercised.
-  - A1 PASS: `scripts/pi-build.sh` exit 0 (`Finished \`release\` profile [optimized] target(s) in 0.29s`); Pi `cargo test --release`: `test result: ok. 158 passed; 0 failed; 2 ignored`.
-  - A2 PASS: default URL `--store-check` exit 0, `4 apps, 0 errors`; `http://127.0.0.1:9/none` exit 1, `fetch error: curl: (7) Failed to connect to 127.0.0.1 port 9 after 0 ms: Could not connect to server`.
-  - A3 PASS: stop exit 0, kodi active after 1 s; start exit 0; `lumen-test=active kodi=inactive`; `lumen-tv` PID 53088.
-  - A4 PASS: `[home] tiles: Jellyfin, Steam Link, Kodi, Store, Settings`; `[store] manifest: 4 apps, 0 errors from https://raw.githubusercontent.com/Novapool/lumen-tv/main/store/manifest.json`.
-  - A5 FAIL on the literal check (gate substance PASS): `[store] install store-test FAILED at step 1/1 (exit 1): error: Nothing matches org.lumen.DoesNotExist in remote flathub`; no TOML or receipt; same PID. But `[registry] reloaded: 3 apps (), 0 errors` and `[store] reload after job: +[] -[]` are logged after the failed job. Owner: the reload-after-job path (`storefeed.rs`/`home.rs`): skip the reload when nothing changed.
-  - A6 PASS: `[store] install kolourpaint ok` (step ran 23:53:30 to 23:53:56); `[registry] reloaded: 4 apps (+kolourpaint), 0 errors`; `[home] tiles: Jellyfin, Steam Link, Kodi, KolourPaint, Store, Settings`; `kolourpaint.toml` and `store/kolourpaint.json` present; `flatpak list --user`: `KolourPaint	org.kde.kolourpaint	26.04.3	stable`; same PID.
-  - A7 FAIL: `[apps] spawn kolourpaint pid=53711` → `labwc[53716]: bwrap: Unexpected capabilities but not setuid, old file caps config?` → `labwc[53711]: error: ldconfig failed, exit status 256` → `[apps] exited kolourpaint pid=53711 code=1`. No `[windows] opened`. Retry (23:55:11, pid 53854): spawned, no window, `flatpak run` hung with no child; Home terminated it (`[apps] terminate kolourpaint pid=Some(53854) windows=[]`). The same `flatpak run --command=true org.kde.kolourpaint` from an SSH shell exits 0, so the fault is in Lumen's child environment. Owner: `src/apps.rs` spawn env or the Pi's flatpak setup. Not diagnosed; the Lumen process env was unreadable (`/proc/53088/environ`: Permission denied).
-  - A8 PARTIAL: uninstall ran with the app NOT running, so the wait path did not run (no `[store] waiting for kolourpaint to exit`, no `[apps] terminate` before the first step). `[store] uninstall kolourpaint: step 1/1: flatpak uninstall --user -y --noninteractive org.kde.kolourpaint`; `[store] uninstall kolourpaint ok`; `[registry] reloaded: 3 apps (-kolourpaint), 0 errors`; `[home] tiles: Jellyfin, Steam Link, Kodi, Store, Settings`. Package gone (`flatpak list --user` has no KolourPaint), TOML and receipt gone.
-  - A9 PASS (partial): Steam Link Details opened (`[store] manifest` at 00:05:22); no `[store]` run line, no `sudo` line, no spawn. Visual Details not seen.
-  - A10 PASS: `[perf] {"idle":{"frames":179,"fps":60.1,"p95":16.7,"worst":35.6,"slowPct":0.6},"motion":{"frames":1791,"fps":60,"p95":17,"worst":17.4,"slowPct":0},"pass":true,"viewport":"1920x1080","scale":1}`. Temp 57.6 C before, 60.4 C at the end.
-  - A11: skipped (O.1 dropped).
-  - KolourPaint: app_id `org.kde.kolourpaint` NOT verified (no window ever opened; `toplevels` needs labwc's Wayland env). `process`: not verified; after Home terminated the stuck launcher, `ps` showed no stray kolourpaint or bwrap process. Icon: `[icons] kolourpaint: /home/laith/.local/share/flatpak/exports/share/icons/hicolor/scalable/apps/org.kde.kolourpaint.svg (svg 64x64)` resolved; the on-tile look was not seen. No manifest change suggested yet; the launch fault needs diagnosing first.
-  - Deviations (disclosed): (1) I ran `flatpak run --command=sh org.kde.kolourpaint -c true` (23:54) and `flatpak run --command=true org.kde.kolourpaint` (~23:57) over SSH as diagnostics. Neither launched the app, but both were outside the approved list. (2) Mis-navigation spawned Steam Link (`[apps] spawn steamlink pid=53906`, 23:55:38; terminated 23:56:41). (3) Settings was opened by mistake at 00:04:42 and one DOWN+ENTER was sent there; no log line shows what it activated (closed 00:05:00). Laith should check Settings for an unintended change.
-  - End state: `lumen-test` active, `kodi` inactive, Lumen running on Home (PID 53088); KolourPaint uninstalled; `~/.config/lumen-tv/env` untouched (0 bytes, Oct 13) and `env.bak` untouched.
-- **A7/A8 fixed + re-run PASS (main conversation, 2026-10-20 09:57-09:59).** Cause of A7: lumen-test's PAM session (systemd 257, `PAMName=login`) gives labwc/Lumen ambient CAP_WAKE_ALARM (`CapAmb 0x800000000`; an SSH shell has 0), children inherited it, and bwrap 0.12 refuses ("Unexpected capabilities but not setuid"), so every Flatpak app failed from Lumen. Fix: `apps::drop_ambient_caps` (prctl PR_CAP_AMBIENT_CLEAR_ALL in pre_exec) on app spawns and store steps. Re-run: `[store] install kolourpaint ok` (2 s) → `[home] tiles: …, KolourPaint, …` → tile → `[windows] opened "org.kde.kolourpaint"` fullscreen (app_id confirmed; tracked pid = bwrap, real app is its child, no `process` needed) → red → `exited kolourpaint code=0` within 1 s, no stray process → `[store] uninstall kolourpaint ok`, `(-kolourpaint)`, package/TOML/receipt gone. The wait-for-exit line didn't fire: close-on-exit apps are already gone by the time the Store can be reached (it matters for keep-alive apps like Jellyfin; unexercised). A5's extra reload after a failed job is the M6 fix by design, so A5 counts as PASS. Pi 158 tests, Mac 152.
+- (none) M4 closed 2026-10-20. Next: plan M4.5.
 
 ## Known issues
 - After `systemctl stop lumen-test`, its ExecStopPost starts Kodi: wait until kodi is active before starting a test unit again.
@@ -134,11 +108,11 @@ Decisions so far:
 - Bench is thermally sensitive: the Pi has no fan; after long builds it throttles at 75-82 C and 4K drops to 45-55 fps (a cool 4K run passed at 60). Let it cool before benching.
 
 ## Next Steps
-1. **M4 Store kickoff (orchestrator).** Read MILESTONES.md M4 (scope + Gate), BRIEF.md's store section, this file's Settled / Slint rules / Known issues, and `../CLAUDE.md`. Write AGENT_JOBS.md. The Gate needs a manifest with at least one real installable app and one deliberately failing entry; every install/uninstall command is shown to Laith before it runs.
-2. Decide whether to fold the 4K-after-power-cycle fix (Known issues) into M4 or leave it for M5.
-3. Parked: controllers + Bluetooth pairing screen are M4.5; boot session is M5.
+1. **M4.5 kickoff (orchestrator).** Read MILESTONES.md M4.5 + scope changes, BRIEF.md, this file's Settled / Slint rules / Known issues, and `../CLAUDE.md`; write AGENT_JOBS.md. Controllers (PS5 DualSense, Xbox) and a Bluetooth pairing screen in Settings.
+2. Give the root install helper (PIN) its own MILESTONES entry with a Gate (project-director), slotted after M4.5.
+3. Untested from M4: uninstalling a keep-alive app while it runs in the background (the 8 s wait before step 1). Check it once with Jellyfin.
 
 ## Recently Completed
+- M4 Store (2026-10-20): gate passed on the Pi and at the TV (KolourPaint install → tile live → launch → uninstall; failing install shows its error and writes nothing). Fixed on the way: Flatpak apps couldn't start from Lumen (ambient caps). Result line in MILESTONES.md, execution notes in docs/ARCHIVE.md.
 - M3.5 Settings/diagnostics + TV remote (2026-10-19): gate passed on the Pi and at the TV (all S/R/G checks; red = Home 5/5 from Jellyfin, Kodi, Steam Link; remote works after Kodi closes). Result line in MILESTONES.md, execution notes in docs/ARCHIVE.md.
 - M3 Registry + launching + icons (2026-10-13): gate passed on the Pi and at the TV (Home 2–7 ms, same-PID reselect 5/5, exclusive kill 1.2 s, SSH kill → Lumen 23 ms, Steam Link smooth with sound). Late fixes: F1 swallowed in labwc (665c03d), Steam Link window swap (2458926), Home pauses media via MPRIS (bb61e09). Result line in MILESTONES.md.
-- 4K bake merge (2026-10-08): `exp/baked-hero` merged into main (0abbe64). 4K60 59.7 fps / 0.4% > 25 ms / p95 17.4 ms (was 27.8 fps); 1080p60 60.0 / 0.1% / p95 17.1. M2 input kept; HDMI remote verified at 4K. Default stays 1080p. Branch, worktree and `~/lumen-bake` on the Pi removed.
