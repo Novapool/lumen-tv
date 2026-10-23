@@ -21,6 +21,8 @@ export component SettingsScreen inherits Rectangle {
     in property <[DiagPanel]> panels: [];
     in property <length> rem: 16px;
     in property <bool> input-debug-on: false;
+    in property <string> resolution-detail: "";
+    in property <int> resolution-level: 0;
     in property <int> level: 0; // 0 panel list, 1 rows
     in property <int> sel-panel: 0;
     in property <int> sel-row: 0;
@@ -36,6 +38,7 @@ export component SettingsScreen inherits Rectangle {
     property <int> toggles-index: root.panels.length + 1;
     property <bool> on-toggles: root.sel-panel == root.toggles-index;
     property <[DiagRow]> shown-rows: root.on-bt ? [] : root.on-toggles ? [
+        { text: "Resolution", detail: root.resolution-detail, level: root.resolution-level },
         { text: "Input debug", detail: root.input-debug-on ? "On" : "Off", level: root.input-debug-on ? 1 : 0 },
         { text: "Run benchmark", detail: "Select to start", level: 0 },
     ] : root.panels[root.sel-panel].rows;

@@ -1,0 +1,36 @@
+# M5 boot session: labwc with Lumen as its only client, on tty1 in place of Kodi.
+# Installed by session/install.sh (user and home are substituted there). Enabling
+# it (install.sh --apply --set-default) is the boot switch; Kodi stays the
+# default until then. lumen-test.service remains the manual test path.
+[Unit]
+Description=Lumen session (labwc)
+After=systemd-user-sessions.service network-online.target sound.target bluetooth.target
+Wants=network-online.target
+Conflicts=getty@tty1.service kodi.service lumen-test.service steamlink.service uxplay.service
+# Restart the session whenever it exits, crash or clean exit (a clean exit
+# would otherwise leave the TV black). An explicit stop, or a Conflicts= unit
+# such as steamlink starting, is not restarted. Past the start limit the unit
+# goes to "failed" and OnFailure hands the TV to Kodi.
+# (M6 will revisit this rescue once other people install Lumen without Kodi.)
+StartLimitIntervalSec=60
+StartLimitBurst=3
+OnFailure=kodi.service
+
+[Service]
+User=laith
+Group=laith
+SupplementaryGroups=input video render audio
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+# Optional overrides without sudo (LUMEN_BENCH=1, LUMEN_MODE, SLINT_*).
+EnvironmentFile=-/home/laith/.config/lumen-tv/env
+ExecStart=/usr/bin/labwc -C /home/laith/lumen-tv/session/labwc -S /home/laith/lumen-tv/session/start-lumen.sh
+Restart=always
+RestartSec=2
+
+[Install]
+# Same target kodi.service uses on pitv.
+WantedBy=multi-user.target

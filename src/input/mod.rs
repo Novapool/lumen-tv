@@ -11,6 +11,7 @@
 mod dispatch;
 mod keys_out;
 mod mapping;
+pub use mapping::SHIPPED;
 
 #[cfg(target_os = "linux")]
 mod devices;

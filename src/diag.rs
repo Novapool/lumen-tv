@@ -124,7 +124,8 @@ pub struct DisplayIn<'a> {
     pub randr: &'a Randr,
     /// Lumen's own window, physical px, and its scale factor.
     pub window: (u32, u32, f32),
-    pub lumen_mode: Option<&'a str>,
+    /// The saved/effective mode value and where it came from.
+    pub saved_mode: (&'a str, crate::settings::Origin),
     pub perf: &'a PerfView,
 }
 
@@ -168,8 +169,12 @@ pub fn display_panel(d: &DisplayIn) -> Panel {
         )
     });
     rows.push(row(
-        "LUMEN_MODE",
-        d.lumen_mode.unwrap_or("not set (default 1080p60)"),
+        "Saved mode",
+        format!(
+            "{} ({})",
+            crate::settings::mode_label(d.saved_mode.0),
+            d.saved_mode.1.label()
+        ),
         NORMAL,
     ));
     rows.push(match d.perf.fps {
@@ -457,6 +462,151 @@ pub fn running_panel(view: Option<&RunningView>) -> Panel {
     }
 }
 
+// ------------------------------------------------------------- resolution
+
+/// Detail text and level for the Resolution toggle row: the desired mode's
+/// label plus where the output watcher stands.
+pub fn resolution_detail(st: &crate::platform::output::DisplayStatus) -> (String, i32) {
+    let label = crate::settings::mode_label(&st.desired);
+    if !st.available {
+        return (format!("{label} · n/a (display control runs on the Pi only)"), NORMAL);
+    }
+    match &st.current {
+        Some(cur) if crate::platform::output::mode_matches(cur, &st.desired) => (format!("{label} · active"), GOOD),
+        _ if st.gave_up => {
+            let why = st.last_result.as_deref().filter(|_| st.last_ok == Some(false)).map(|r| format!(": {r}")).unwrap_or_default();
+            (format!("{label} · gave up after 3 tries{why}"), ERROR)
+        }
+        _ => match (st.last_ok, &st.last_result) {
+            (Some(false), Some(r)) => (format!("{label} · failed: {r}"), ERROR),
+            _ => (format!("{label} · applying…"), NORMAL),
+        },
+    }
+}
+
+// --------------------------------------------------------------- mappings
+
+/// One mapping file for display: name, where it comes from, its TOML text.
+pub struct MappingSource {
+    pub file: String,
+    pub user: bool,
+    pub text: Result<String, String>,
+}
+
+/// Shipped files first (a user file of the same name replaces the shipped text
+/// and is marked as an override), then the other user files by name.
+pub fn mapping_sources(shipped: &[(&str, &str)], user: Vec<(String, Result<String, String>)>) -> Vec<MappingSource> {
+    let mut out: Vec<MappingSource> = shipped
+        .iter()
+        .map(|(f, t)| MappingSource { file: f.to_string(), user: false, text: Ok(t.to_string()) })
+        .collect();
+    for (file, text) in user {
+        match out.iter_mut().find(|m| m.file == file) {
+            Some(slot) => *slot = MappingSource { file, user: true, text },
+            None => out.push(MappingSource { file, user: true, text }),
+        }
+    }
+    out
+}
+
+/// User mapping files in `dir`, sorted by name (unreadable ones carry the error).
+pub fn read_user_mappings(dir: &std::path::Path) -> Vec<(String, Result<String, String>)> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|p| {
+            let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let text = std::fs::read_to_string(&p).map_err(|e| e.to_string());
+            (name, text)
+        })
+        .collect()
+}
+
+fn toml_actions(v: &toml::Value) -> String {
+    match v {
+        toml::Value::String(s) => s.clone(),
+        toml::Value::Array(a) => a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" / "),
+        other => other.to_string(),
+    }
+}
+
+pub fn mappings_panel(files: &[MappingSource]) -> Panel {
+    let mut rows = Vec::new();
+    for f in files {
+        let origin = match (f.user, shipped_has(&f.file)) {
+            (true, true) => "user (overrides built-in)",
+            (true, false) => "user",
+            _ => "built-in",
+        };
+        let parsed = f.text.clone().and_then(|t| t.parse::<toml::Table>().map_err(|e| e.message().to_string()));
+        match parsed {
+            Err(e) => rows.push(row(format!("{}: {e}", f.file), origin, ERROR)),
+            Ok(t) => {
+                let dz = t.get("deadzone").and_then(|d| d.as_float().or_else(|| d.as_integer().map(|i| i as f64)));
+                let dz = dz.map_or("deadzone default".to_string(), |d| format!("deadzone {d}"));
+                rows.push(row(f.file.clone(), format!("{origin} · {dz}"), GOOD));
+                for table in ["keys", "axes"] {
+                    if let Some(binds) = t.get(table).and_then(|b| b.as_table()) {
+                        for (code, action) in binds {
+                            rows.push(row(format!("    {code}"), toml_actions(action), NORMAL));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if rows.is_empty() {
+        rows.push(row("No mapping files", "", NORMAL));
+    }
+    Panel { title: "Mappings", rows }
+}
+
+fn shipped_has(file: &str) -> bool {
+    crate::input::SHIPPED.iter().any(|(f, _)| *f == file)
+}
+
+// ------------------------------------------------------------------ about
+
+pub struct AboutIn<'a> {
+    pub git: &'a str,
+    pub build_date: &'a str,
+    pub host: Option<&'a str>,
+    pub uptime: Option<Duration>,
+    pub store_url: &'a str,
+    pub store_origin: crate::settings::Origin,
+    pub settings_error: Option<&'a str>,
+    pub settings_path: &'a str,
+}
+
+pub fn fmt_uptime(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..=59 => format!("{s} s"),
+        60..=3599 => format!("{} min", s / 60),
+        _ => format!("{} h {} min", s / 3600, (s % 3600) / 60),
+    }
+}
+
+pub fn about_panel(a: &AboutIn) -> Panel {
+    let mut rows = vec![
+        row("Lumen", format!("{} ({}, built {})", env!("CARGO_PKG_VERSION"), a.git, a.build_date), NORMAL),
+        row("License", "GPL-3.0-or-later", NORMAL),
+        row("Source", "github.com/Novapool/lumen-tv", NORMAL),
+        row("Host", a.host.unwrap_or("unknown"), NORMAL),
+        row("Uptime", a.uptime.map_or("n/a".to_string(), fmt_uptime), NORMAL),
+        row("Renderer", "Slint femtovg", NORMAL),
+        row("Store manifest", a.store_url, NORMAL),
+        row("Store manifest set by", a.store_origin.label(), NORMAL),
+        row(format!("Change it in {} (store_url)", a.settings_path), "", NORMAL),
+    ];
+    if let Some(e) = a.settings_error {
+        rows.push(row(format!("settings.toml: {e}"), "", ERROR));
+    }
+    Panel { title: "About", rows }
+}
+
 // -------------------------------------------------------------------- log
 
 pub fn log_panel(lines: &[String]) -> Panel {
@@ -522,7 +672,7 @@ HDMI-A-2 "Unplugged"
             display_panel(&DisplayIn {
                 randr,
                 window: (1920, 1080, 1.0),
-                lumen_mode: None,
+                saved_mode: ("1920x1080@60", crate::settings::Origin::Default),
                 perf: &p,
             })
         };
@@ -544,7 +694,7 @@ HDMI-A-2 "Unplugged"
         assert!(ready
             .rows
             .iter()
-            .any(|r| r.text == "LUMEN_MODE" && r.detail.starts_with("not set")));
+            .any(|r| r.text == "Saved mode" && r.detail == "1080p60 (default)"));
         assert!(ready
             .rows
             .iter()
@@ -560,7 +710,7 @@ HDMI-A-2 "Unplugged"
         let d = display_panel(&DisplayIn {
             randr: &Randr::NotAsked,
             window: (0, 0, 1.0),
-            lumen_mode: Some("3840x2160@60"),
+            saved_mode: ("3840x2160@60", crate::settings::Origin::Env),
             perf: &p,
         });
         assert!(d
@@ -578,7 +728,7 @@ HDMI-A-2 "Unplugged"
         assert!(d
             .rows
             .iter()
-            .any(|r| r.text == "LUMEN_MODE" && r.detail == "3840x2160@60"));
+            .any(|r| r.text == "Saved mode" && r.detail == "4K60 (environment)"));
     }
 
     #[test]
@@ -743,5 +893,180 @@ HDMI-A-2 "Unplugged"
         assert_eq!(p.rows[0].level, NORMAL);
         assert_eq!(p.rows[1].level, ERROR);
         assert_eq!(log_panel(&[]).rows[0].text, "No log lines captured");
+    }
+
+    #[test]
+    fn resolution_detail_states() {
+        use crate::platform::output::DisplayStatus;
+        let mut st = DisplayStatus { available: false, desired: "3840x2160@60".into(), ..Default::default() };
+        assert!(resolution_detail(&st).0.starts_with("4K60 · n/a"));
+        st.available = true;
+        assert_eq!(resolution_detail(&st), ("4K60 · applying…".into(), NORMAL));
+        st.current = Some("3840x2160 @ 59.94 Hz".into());
+        assert_eq!(resolution_detail(&st), ("4K60 · active".into(), GOOD));
+        st.current = Some("1920x1080 @ 60.00 Hz".into());
+        st.last_result = Some("wlr-randr failed: no such mode".into());
+        st.last_ok = Some(false);
+        assert_eq!(resolution_detail(&st), ("4K60 · failed: wlr-randr failed: no such mode".into(), ERROR));
+        st.gave_up = true;
+        let (t, l) = resolution_detail(&st);
+        assert!(t.starts_with("4K60 · gave up after 3 tries") && l == ERROR);
+    }
+
+    #[test]
+    fn mappings_rows() {
+        let shipped = [("pad.toml", "deadzone = 0.4\n[keys]\nBTN_SOUTH = \"Select\"\n[axes]\nABS_X = [\"Left\", \"Right\"]\n")];
+        let user = vec![
+            ("pad.toml".to_string(), Ok("[keys]\nBTN_EAST = \"Back\"\n".to_string())),
+            ("mine.toml".to_string(), Ok("not = [valid".to_string())),
+        ];
+        let src = mapping_sources(&shipped, user);
+        assert_eq!(src.len(), 2);
+        let p = mappings_panel(&mapping_sources(&shipped, vec![]));
+        assert_eq!(p.rows[0], row("pad.toml", "built-in · deadzone 0.4", GOOD));
+        assert_eq!(p.rows[1], row("    BTN_SOUTH", "Select", NORMAL));
+        assert_eq!(p.rows[2], row("    ABS_X", "Left / Right", NORMAL));
+        let p = mappings_panel(&src);
+        assert!(p.rows.iter().any(|r| r.text == "pad.toml" && r.detail.starts_with("user") && r.detail.contains("deadzone default")));
+        assert!(p.rows.iter().any(|r| r.level == ERROR && r.text.starts_with("mine.toml:")));
+        assert_eq!(mappings_panel(&[]).rows[0].text, "No mapping files");
+    }
+
+    #[test]
+    fn override_is_marked_for_shipped_names() {
+        let src = mapping_sources(&[("xbox.toml", "")], vec![("xbox.toml".into(), Ok("[keys]\n".into()))]);
+        let p = mappings_panel(&src);
+        assert!(p.rows[0].detail.contains("overrides built-in"));
+    }
+
+    #[test]
+    fn about_rows() {
+        let a = AboutIn {
+            git: "abc123",
+            build_date: "2026-10-21",
+            host: Some("pitv"),
+            uptime: Some(Duration::from_secs(3 * 3600 + 5 * 60)),
+            store_url: "https://x/m.json",
+            store_origin: crate::settings::Origin::Settings,
+            settings_error: None,
+            settings_path: "~/.config/lumen-tv/settings.toml",
+        };
+        let p = about_panel(&a);
+        assert!(p.rows[0].detail.contains("abc123"));
+        assert!(p.rows.iter().any(|r| r.text == "Uptime" && r.detail == "3 h 5 min"));
+        assert!(p.rows.iter().any(|r| r.text == "Store manifest" && r.detail == "https://x/m.json"));
+        assert!(p.rows.iter().any(|r| r.text == "Store manifest set by" && r.detail == "settings.toml"));
+        assert!(p.rows.iter().all(|r| r.level != ERROR));
+        let bad = about_panel(&AboutIn { settings_error: Some("bad key"), host: None, uptime: None, ..a });
+        assert!(bad.rows.iter().any(|r| r.level == ERROR && r.text.contains("bad key")));
+        assert!(bad.rows.iter().any(|r| r.text == "Uptime" && r.detail == "n/a"));
+    }
+
+
+    #[test]
+    fn resolution_detail_failure_wording_and_matching_beats_old_error() {
+        use crate::platform::output::DisplayStatus;
+        let mut st = DisplayStatus {
+            available: true,
+            desired: "1920x1080@60".into(),
+            current: Some("3840x2160 @ 60.00 Hz".into()),
+            last_result: Some("wlr-randr: No such file or directory".into()),
+            last_ok: Some(false),
+            ..Default::default()
+        };
+        // Typed outcome, not the wording, decides.
+        assert_eq!(resolution_detail(&st).1, ERROR);
+        // Gave up with the last apply having succeeded: still an error, no stale reason.
+        st.gave_up = true;
+        st.last_ok = Some(true);
+        assert_eq!(resolution_detail(&st), ("1080p60 · gave up after 3 tries".into(), ERROR));
+        st.gave_up = false;
+        // A successful apply that mentions "error" in its text is not an error.
+        st.last_result = Some("applied 1920x1080@60 (error-free)".into());
+        assert_eq!(resolution_detail(&st), ("1080p60 · applying…".into(), NORMAL));
+        // Once the output matches, an old error no longer shows.
+        st.current = Some("1920x1080 @ 59.94 Hz".into());
+        st.last_result = Some("earlier error".into());
+        st.last_ok = Some(false);
+        assert_eq!(resolution_detail(&st), ("1080p60 · active".into(), GOOD));
+        // Output gone: no current mode.
+        st.current = None;
+        st.last_result = None;
+        assert_eq!(resolution_detail(&st).1, NORMAL);
+    }
+
+    #[test]
+    fn broken_user_mapping_overriding_a_shipped_name_shows_an_error_row() {
+        let src = mapping_sources(&[("xbox.toml", "[keys]\n")], vec![("xbox.toml".into(), Ok("[keys\nbroken".into()))]);
+        assert!(src[0].user);
+        let p = mappings_panel(&src);
+        assert_eq!(p.rows.len(), 1);
+        assert_eq!(p.rows[0].level, ERROR);
+        assert!(p.rows[0].text.starts_with("xbox.toml:"));
+        assert_eq!(p.rows[0].detail, "user (overrides built-in)");
+    }
+
+    #[test]
+    fn unreadable_user_mapping_carries_its_read_error() {
+        let src = mapping_sources(&[], vec![("locked.toml".into(), Err("permission denied".into()))]);
+        let p = mappings_panel(&src);
+        assert_eq!(p.rows[0], row("locked.toml: permission denied", "user", ERROR));
+    }
+
+    #[test]
+    fn mappings_panel_integer_deadzone_and_user_only_origin() {
+        let src = mapping_sources(&[], vec![("mine.toml".into(), Ok("deadzone = 1\n[keys]\nBTN_A = \"Select\"\n".into()))]);
+        let p = mappings_panel(&src);
+        assert_eq!(p.rows[0], row("mine.toml", "user · deadzone 1", GOOD));
+    }
+
+    #[test]
+    fn real_shipped_mapping_files_render_without_errors() {
+        let p = mappings_panel(&mapping_sources(&crate::input::SHIPPED, vec![]));
+        assert!(p.rows.iter().all(|r| r.level != ERROR));
+        assert!(p.rows.iter().filter(|r| r.level == GOOD).count() == crate::input::SHIPPED.len());
+    }
+
+    #[test]
+    fn read_user_mappings_sorts_by_name_and_skips_other_files_and_missing_dirs() {
+        let dir = std::env::temp_dir().join(format!("lumen-diag-maps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("b.toml"), "B").unwrap();
+        std::fs::write(dir.join("a.toml"), "A").unwrap();
+        std::fs::write(dir.join("readme.txt"), "x").unwrap();
+        let got = read_user_mappings(&dir);
+        assert_eq!(got, vec![("a.toml".to_string(), Ok("A".to_string())), ("b.toml".to_string(), Ok("B".to_string()))]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(read_user_mappings(&dir).is_empty());
+    }
+
+    #[test]
+    fn fmt_uptime_boundaries() {
+        assert_eq!(fmt_uptime(Duration::from_secs(0)), "0 s");
+        assert_eq!(fmt_uptime(Duration::from_secs(59)), "59 s");
+        assert_eq!(fmt_uptime(Duration::from_secs(60)), "1 min");
+        assert_eq!(fmt_uptime(Duration::from_secs(3599)), "59 min");
+        assert_eq!(fmt_uptime(Duration::from_secs(3600)), "1 h 0 min");
+    }
+
+    #[test]
+    fn about_panel_shows_store_origin_for_env_and_default() {
+        let mk = |origin| AboutIn {
+            git: "g",
+            build_date: "d",
+            host: None,
+            uptime: None,
+            store_url: "u",
+            store_origin: origin,
+            settings_error: None,
+            settings_path: "p",
+        };
+        use crate::settings::Origin;
+        for (o, label) in [(Origin::Env, "environment"), (Origin::Default, "default")] {
+            let p = about_panel(&mk(o));
+            assert!(p.rows.iter().any(|r| r.text == "Store manifest set by" && r.detail == label));
+        }
+        assert!(about_panel(&mk(Origin::Default)).rows.iter().any(|r| r.text == "Host" && r.detail == "unknown"));
     }
 }

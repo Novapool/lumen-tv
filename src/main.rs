@@ -25,6 +25,7 @@ mod input;
 mod platform;
 #[cfg(target_os = "linux")]
 mod session;
+mod settings;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod store;
 mod storefeed;
@@ -96,6 +97,9 @@ struct Sources {
     status: input::Status,
     debug: Arc<AtomicBool>,
     randr: diag::SharedRandr,
+    /// The last settings.toml parse error logged, so a broken file logs once
+    /// rather than on every 1 s refresh.
+    logged_settings_err: RefCell<Option<String>>,
 }
 
 impl Sources {
@@ -109,7 +113,31 @@ impl Sources {
     fn panels(&self, ui: &AppWindow) -> Vec<diag::Panel> {
         let size = ui.window().size();
         let randr = self.randr.lock().map(|r| r.clone()).unwrap_or_default();
-        let mode = std::env::var("LUMEN_MODE").ok();
+        let settings_path_buf = settings::path();
+        let (loaded, settings_error) = settings::load();
+        if *self.logged_settings_err.borrow() != settings_error {
+            if let Some(e) = &settings_error {
+                eprintln!("[settings] {e}");
+            }
+            *self.logged_settings_err.borrow_mut() = settings_error.clone();
+        }
+        let (mode, mode_origin) = settings::resolve_mode(&loaded, std::env::var("LUMEN_MODE").ok().as_deref());
+        let status = platform::output::status();
+        let (detail, level) = diag::resolution_detail(&status);
+        ui.set_resolution_detail(detail.into());
+        ui.set_resolution_level(level);
+        let cfg_dir = settings_path_buf.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        let mappings = diag::mapping_sources(&input::SHIPPED, diag::read_user_mappings(&cfg_dir.join("input")));
+        let (store_url, store_origin) =
+            settings::resolve_store_url(&loaded, std::env::var("LUMEN_STORE_URL").ok().as_deref(), store::DEFAULT_URL);
+        let host = host_name();
+        let settings_path = {
+            let full = settings_path_buf.display().to_string();
+            match std::env::var("HOME").ok().filter(|h| !h.is_empty()).and_then(|h| full.strip_prefix(&h).map(str::to_string)) {
+                Some(rest) => format!("~{rest}"),
+                None => full,
+            }
+        };
         let perf = self.bench.perf_view();
         let devices = self.status.lock().map(|d| d.clone()).unwrap_or_default();
         let apps = ui.get_apps();
@@ -117,19 +145,43 @@ impl Sources {
             diag::display_panel(&diag::DisplayIn {
                 randr: &randr,
                 window: (size.width, size.height, ui.window().scale_factor()),
-                lumen_mode: mode.as_deref(),
+                saved_mode: (&mode, mode_origin),
                 perf: &perf,
             }),
             diag::input_panel(&devices, cfg!(target_os = "linux"), self.debug.load(Ordering::Relaxed), diag::claim_status().as_ref(), Instant::now()),
+            diag::mappings_panel(&mappings),
             home::with(|h| {
                 let icons: Vec<(String, &Option<icons::IconStatus>)> =
                     (0..apps.row_count()).filter_map(|i| Some((apps.row_data(i)?.id.to_string(), h.icons.get(i)?))).collect();
                 diag::apps_panel(&h.errors, &icons)
             }),
             diag::running_panel(self.running().as_ref()),
+            diag::about_panel(&diag::AboutIn {
+                git: env!("LUMEN_GIT"),
+                build_date: env!("LUMEN_BUILD_DATE"),
+                host: host.as_deref(),
+                uptime: uptime(),
+                store_url: &store_url,
+                store_origin,
+                settings_error: settings_error.as_deref(),
+                settings_path: &settings_path,
+            }),
             diag::log_panel(&logtail::tail(logtail::KEEP)),
         ]
     }
+}
+
+fn host_name() -> Option<String> {
+    let name = std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()))?;
+    Some(name.trim().to_string()).filter(|n| !n.is_empty())
+}
+
+/// Host uptime from /proc/uptime (None off Linux).
+fn uptime() -> Option<Duration> {
+    let text = std::fs::read_to_string("/proc/uptime").ok()?;
+    text.split_whitespace().next()?.parse::<f64>().ok().map(Duration::from_secs_f64)
 }
 
 /// Settings feed: refresh `diag-panels` every second while the screen is open
@@ -163,6 +215,30 @@ fn wire_settings(ui: &AppWindow, src: Sources) {
         println!("[settings] open: {devices} devices, {} registry errors, {running} running", home::with(|h| h.errors.len()));
         let r = r.clone();
         t.start(TimerMode::Repeated, Duration::from_secs(1), r);
+    });
+
+    // Resolution: flip between the two saved modes, remember it, and tell the
+    // output watcher (which also re-applies it when the TV comes back).
+    let (weak, r) = (ui.as_weak(), refresh.clone());
+    ui.on_toggle_resolution(move || {
+        let cur = platform::output::status().desired;
+        let next = if cur == settings::MODES[1].1 { settings::MODES[0].1 } else { settings::MODES[1].1 };
+        println!("[settings] resolution {cur} -> {next}");
+        let saved = settings::save_mode(next);
+        if let Err(e) = &saved {
+            println!("[settings] could not save mode: {e}");
+        }
+        platform::output::request_mode(next);
+        if let Some(ui) = weak.upgrade() {
+            if ui.get_settings_open() {
+                r();
+                // The refresh wrote the watcher's detail; a failed save replaces it.
+                if let Err(e) = saved {
+                    ui.set_resolution_detail(format!("{} · not saved: {e}", settings::mode_label(next)).into());
+                    ui.set_resolution_level(diag::ERROR);
+                }
+            }
+        }
     });
 
     let (weak, s, r) = (ui.as_weak(), src, refresh);
@@ -247,6 +323,7 @@ fn main() -> Result<(), slint::PlatformError> {
         _ => {}
     }
     logtail::install();
+    platform::output::start(settings::mode().0);
     // The compositor tells windows apart by app_id: this is how Lumen finds
     // its own window among the apps' (apps::LUMEN_APP_ID).
     // (set_xdg_app_id needs the platform to exist first, hence select().)
@@ -320,7 +397,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let bench = bench::Bench::attach(&ui);
     wire_settings(
         &ui,
-        Sources { bench: bench.clone(), status: input_status, debug: input_debug, randr: Default::default() },
+        Sources { bench: bench.clone(), status: input_status, debug: input_debug, randr: Default::default(), logged_settings_err: RefCell::new(None) },
     );
     storefeed::wire(&ui);
     btfeed::wire(&ui);

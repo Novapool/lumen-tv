@@ -4,6 +4,7 @@
 // control seam; its Linux implementation talks to labwc in `toplevel`.
 
 pub mod fake_bt;
+pub mod output;
 pub mod pi;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod scan_slot;

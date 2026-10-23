@@ -40,8 +40,8 @@ pub fn start(
     debug: Arc<AtomicBool>,
     on_action: impl Fn(Action, &str) + Send + 'static,
 ) {
-    let user_dir = config_dir().map(|d| d.join("input"));
-    let mappings = mapping::load(user_dir.as_deref(), &resolve);
+    let user_dir = crate::registry::config_dir().join("input");
+    let mappings = mapping::load(Some(user_dir.as_path()), &resolve);
     let (tx, rx) = mpsc::channel();
     let open: Open = Arc::default();
 
@@ -76,13 +76,6 @@ pub fn start(
     }
     drop(tx);
     thread::spawn(move || run(rx, mappings, status, debug, on_action));
-}
-
-fn config_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("lumen-tv"))
 }
 
 /// Resolves a kernel code name ("KEY_UP", "BTN_SOUTH", "ABS_X") for the mapping files.
@@ -199,7 +192,9 @@ fn run(
         }
     };
     loop {
-        let msg = match dispatch.deadline() {
+        let map_deadline = devices.values().filter_map(|d| d.map.deadline()).min();
+        let deadline = [dispatch.deadline(), map_deadline].into_iter().flatten().min();
+        let msg = match deadline {
             Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
         };
@@ -211,6 +206,24 @@ fn run(
                 with_status(&status, &path, |s| s.last_action = Some((action, now)));
                 inject(d.class, action);
                 on_action(action, &d.name);
+            }
+        }
+        // Presses the rebound lockout held back, now that its window is over.
+        for (path, d) in devices.iter_mut() {
+            for (action, pressed) in d.map.tick(now) {
+                let out = if pressed {
+                    let fg = super::foreground();
+                    let hold = action == Action::Home && home_needs_hold(d.class, fg.as_deref());
+                    let back_home = back_long_press_is_home(d.class, fg.as_deref());
+                    dispatch.press_rules(path, action, now, hold, back_home)
+                } else {
+                    dispatch.release(path, action, now)
+                };
+                if let Some(action) = out {
+                    with_status(&status, path, |s| s.last_action = Some((action, now)));
+                    inject(d.class, action);
+                    on_action(action, &d.name);
+                }
             }
         }
         if dispatch.take_held_home_fired() {
@@ -264,7 +277,7 @@ fn run(
                 let Some(d) = devices.get_mut(&path) else {
                     continue;
                 };
-                for (action, pressed) in d.map.translate(kind, code, value) {
+                for (action, pressed) in d.map.translate(kind, code, value, now) {
                     let out = if pressed {
                         // One foreground lookup per press decides both rules.
                         let fg = super::foreground();
@@ -329,28 +342,28 @@ mod tests {
             code
         };
         assert_eq!(
-            map.translate(EV_KEY, key("KEY_RED"), 1),
+            map.translate(EV_KEY, key("KEY_RED"), 1, Instant::now()),
             vec![(Action::Home, true)]
         );
         assert_eq!(
-            map.translate(EV_KEY, key("KEY_ENTER"), 1),
+            map.translate(EV_KEY, key("KEY_ENTER"), 1, Instant::now()),
             vec![(Action::Select, true)]
         );
         assert_eq!(
-            map.translate(EV_KEY, key("KEY_BACK"), 1),
+            map.translate(EV_KEY, key("KEY_BACK"), 1, Instant::now()),
             vec![(Action::Back, true)]
         );
         assert_eq!(
-            map.translate(EV_KEY, key("KEY_RED"), 0),
+            map.translate(EV_KEY, key("KEY_RED"), 0, Instant::now()),
             vec![(Action::Home, false)]
         );
         // Unremapped kernel codes still work if the remap failed.
         assert_eq!(
-            map.translate(EV_KEY, key("KEY_OK"), 1),
+            map.translate(EV_KEY, key("KEY_OK"), 1, Instant::now()),
             vec![(Action::Select, true)]
         );
         assert_eq!(
-            map.translate(EV_KEY, key("KEY_EXIT"), 1),
+            map.translate(EV_KEY, key("KEY_EXIT"), 1, Instant::now()),
             vec![(Action::Back, true)]
         );
     }

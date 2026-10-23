@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 
 use crate::registry::{self, Entry};
 
-pub const DEFAULT_URL: &str = "https://raw.githubusercontent.com/Novapool/lumen-tv/main/store/manifest.json";
+pub(crate) const DEFAULT_URL: &str = "https://raw.githubusercontent.com/Novapool/lumen-tv/main/store/manifest.json";
 
 /// Keys of a manifest app that aren't registry fields.
 const STORE_KEYS: [&str; 5] = ["description", "detail", "install", "uninstall", "root"];
@@ -143,9 +143,13 @@ pub fn parse_manifest(text: &str) -> Manifest {
     m
 }
 
-/// `LUMEN_STORE_URL`, else the public manifest.
+/// settings.toml `store_url`, else `LUMEN_STORE_URL`, else the public manifest.
 pub fn source() -> String {
-    std::env::var("LUMEN_STORE_URL").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| DEFAULT_URL.to_string())
+    let (s, err) = crate::settings::load();
+    if let Some(e) = err {
+        eprintln!("[settings] {e}");
+    }
+    crate::settings::resolve_store_url(&s, std::env::var("LUMEN_STORE_URL").ok().as_deref(), DEFAULT_URL).0
 }
 
 /// Blocking: reads a local path / `file://` URL, or runs `curl -fsSL --max-time 20`.
@@ -618,6 +622,16 @@ fn run_step(step: &str, limits: Limits, on_event: &dyn Fn(JobEvent)) -> Result<(
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn source_precedence_settings_env_default() {
+        use crate::settings::{resolve_store_url, Origin, Settings};
+        let set = Settings { mode: None, store_url: Some("https://s/m.json".into()) };
+        assert_eq!(resolve_store_url(&set, Some("https://e"), DEFAULT_URL), ("https://s/m.json".into(), Origin::Settings));
+        let none = Settings::default();
+        assert_eq!(resolve_store_url(&none, Some("https://e"), DEFAULT_URL).1, Origin::Env);
+        assert_eq!(resolve_store_url(&none, None, DEFAULT_URL), (DEFAULT_URL.into(), Origin::Default));
+    }
 
     const MANIFEST: &str = include_str!("../store/manifest.json");
 

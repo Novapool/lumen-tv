@@ -43,6 +43,9 @@ export component AppWindow inherits Window {
     in property <bool> input-debug-on: false;
     callback settings-changed(bool);
     callback toggle-input-debug();
+    in property <string> resolution-detail: "";
+    in property <int> resolution-level: 0;
+    callback toggle-resolution();
     // Settings navigation state: level 0 = panel list, 1 = rows of `s-panel`.
     property <int> s-level: 0;
     property <int> s-panel: 0;
@@ -324,7 +327,7 @@ export component AppWindow inherits Window {
     // panels.length + 1, always last) are built by the UI. Bluetooth is a
     // placeholder: one scan row plus the devices.
     function settings-rows(p: int) -> int {
-        return p > root.diag-panels.length ? 2 : p == root.diag-panels.length ? root.bt-devices.length + 1 : root.diag-panels[p].rows.length;
+        return p > root.diag-panels.length ? 3 : p == root.diag-panels.length ? root.bt-devices.length + 1 : root.diag-panels[p].rows.length;
     }
 
     function settings-nav(e: NavEvent) {
@@ -355,6 +358,8 @@ export component AppWindow inherits Window {
                 root.s-row = max(0, min(root.settings-rows(root.s-panel) - 1, root.s-row + 1));
             } else if (e == NavEvent.select && root.s-panel > root.diag-panels.length) {
                 if (root.s-row == 0) {
+                    root.toggle-resolution();
+                } else if (root.s-row == 1) {
                     root.toggle-input-debug();
                 } else {
                     root.close-settings();
@@ -373,7 +378,7 @@ export component AppWindow inherits Window {
             if (root.s-level == 2) {
                 return "bt sheet \{root.bt-item.address} btn=\{BtText.action-label(BtText.sheet-action(root.bt-item, root.s-bt-btn))}";
             }
-            return "settings panel=\{root.s-panel == root.diag-panels.length ? "Bluetooth" : root.s-panel > root.diag-panels.length ? "Toggles" : root.diag-panels[root.s-panel].title} level=\{root.s-level} row=\{root.s-row} \"\{root.s-level == 0 ? "" : root.s-panel == root.diag-panels.length ? (root.s-row == 0 ? BtText.scan-label(root.bt-state) : root.bt-devices[root.s-row - 1].name) : root.s-panel > root.diag-panels.length ? (root.s-row == 0 ? "Input debug" : "Run benchmark") : root.diag-panels[root.s-panel].rows[root.s-row].text}\"";
+            return "settings panel=\{root.s-panel == root.diag-panels.length ? "Bluetooth" : root.s-panel > root.diag-panels.length ? "Toggles" : root.diag-panels[root.s-panel].title} level=\{root.s-level} row=\{root.s-row} \"\{root.s-level == 0 ? "" : root.s-panel == root.diag-panels.length ? (root.s-row == 0 ? BtText.scan-label(root.bt-state) : root.bt-devices[root.s-row - 1].name) : root.s-panel > root.diag-panels.length ? (root.s-row == 0 ? "Resolution" : root.s-row == 1 ? "Input debug" : "Run benchmark") : root.diag-panels[root.s-panel].rows[root.s-row].text}\"";
         }
         if (root.store-open) {
             return "store level=\{root.st-level} row=\{root.st-row}";
@@ -568,6 +573,8 @@ export component AppWindow inherits Window {
         panels: root.diag-panels;
         rem: root.rem;
         input-debug-on: root.input-debug-on;
+        resolution-detail: root.resolution-detail;
+        resolution-level: root.resolution-level;
         level: root.s-level;
         sel-panel: root.s-panel;
         sel-row: root.s-row;

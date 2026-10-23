@@ -5,6 +5,12 @@
 //
 //   cargo run --release --example fake-pad [drift seconds, default 60]
 //   cargo run --release --example fake-pad dualsense [drift seconds, default 60]
+//   cargo run --release --example fake-pad flick
+//
+// `flick` plugs in a DualSense and flicks the left stick right and left a few
+// times with a spring-back overshoot (255 -> 128 -> 40 -> 128 within ~60 ms).
+// Start it on Home: expect exactly one Right or Left per flick, never the
+// opposite one (the rebound lockout in src/input/mapping.rs).
 //
 // `dualsense` plugs in the three nodes a real DualSense makes (pad, Touchpad,
 // Motion Sensors; 054c:0ce6, sticks 0..255), runs a Home-screen-safe script,
@@ -73,9 +79,13 @@ mod pad {
     pub fn run() -> std::io::Result<()> {
         let mut args = std::env::args().skip(1).peekable();
         let dualsense = args.next_if(|a| a == "dualsense").is_some();
+        let flick = args.next_if(|a| a == "flick").is_some();
         let drift_secs: u64 = args.next().and_then(|a| a.parse().ok()).unwrap_or(60);
         if dualsense {
             return run_dualsense(drift_secs);
+        }
+        if flick {
+            return run_flick();
         }
 
         let mut keys = AttributeSet::<Key>::new();
@@ -205,6 +215,28 @@ mod pad {
                 .build()?;
             Ok(DualSense { pad: Pad { dev, t0 }, touchpad, motion })
         }
+    }
+
+    /// Left-stick flicks with the spring-back overshoot a thumb produces.
+    fn run_flick() -> std::io::Result<()> {
+        let t0 = Instant::now();
+        let mut ds = DualSense::plug_in(t0)?;
+        ds.pad.step("plugged in; flicking the left stick (expect one move per flick, never the opposite one)");
+        sleep(Duration::from_secs(2));
+        let ms = Duration::from_millis;
+        for (name, push, over) in [("Right", 255, 40), ("Left", 0, 215), ("Right", 255, 40), ("Left", 0, 215)] {
+            ds.pad.step(&format!("flick {name} with overshoot (expect {name} only)"));
+            ds.pad.emit(EventType::ABSOLUTE, Abs::ABS_X.0, push)?;
+            sleep(ms(25));
+            ds.pad.emit(EventType::ABSOLUTE, Abs::ABS_X.0, DS_REST)?;
+            sleep(ms(15));
+            ds.pad.emit(EventType::ABSOLUTE, Abs::ABS_X.0, over)?;
+            sleep(ms(20));
+            ds.pad.emit(EventType::ABSOLUTE, Abs::ABS_X.0, DS_REST)?;
+            sleep(Duration::from_millis(1500));
+        }
+        ds.pad.step("unplugging");
+        Ok(())
     }
 
     fn run_dualsense(drift_secs: u64) -> std::io::Result<()> {

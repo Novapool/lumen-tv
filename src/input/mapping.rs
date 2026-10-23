@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -21,6 +22,14 @@ const DEFAULT_DEADZONE: f32 = 0.4;
 /// A stick that has crossed the deadzone stays pressed until it falls back
 /// below this fraction of it, so a stick resting near the edge can't flicker.
 const RELEASE_FRACTION: f32 = 0.75;
+/// After an analog stick releases a direction, a press in the opposite
+/// direction on the same axis is ignored for this long. A thumb flick springs
+/// back past centre and briefly overshoots into the other side; without this
+/// the overshoot fires the opposite action and focus snaps back. A deliberate
+/// reversal takes longer than this. If the opposite deflection is still held
+/// when the window ends, `DeviceMap::tick` fires it (a stick held steady at
+/// full deflection sends no further events).
+const REBOUND_LOCKOUT: Duration = Duration::from_millis(150);
 
 /// The mapping files built into Lumen.
 pub const SHIPPED: [(&str, &str); 5] = [
@@ -159,7 +168,7 @@ impl Mapping {
                 let actions = *self.axes.get(&code)?;
                 let center = (min as f32 + max as f32) / 2.0;
                 let half = (max as f32 - min as f32) / 2.0;
-                Some((code, Axis { actions, center, half, deadzone: self.deadzone, dir: 0 }))
+                Some((code, Axis { actions, center, half, deadzone: self.deadzone, dir: 0, analog: half > 1.0, released: None, pos: 0.0 }))
             })
             .collect();
         DeviceMap { keys: self.keys.clone(), axes }
@@ -223,6 +232,13 @@ struct Axis {
     deadzone: f32,
     /// -1, 0 or 1: the direction currently pressed.
     dir: i8,
+    /// Wider than -1..1. Hats (d-pad) are exact and never rebound.
+    analog: bool,
+    /// The direction last released and when, for the rebound lockout.
+    released: Option<(i8, Instant)>,
+    /// Last position seen, -1..1, so a press held back by the lockout can be
+    /// fired by `DeviceMap::tick` without waiting for another event.
+    pos: f32,
 }
 
 /// Turns one device's raw events into action presses (true) and releases (false).
@@ -232,19 +248,56 @@ pub struct DeviceMap {
 }
 
 impl DeviceMap {
-    pub fn translate(&mut self, kind: u16, code: u16, value: i32) -> Vec<(Action, bool)> {
+    pub fn translate(&mut self, kind: u16, code: u16, value: i32, now: Instant) -> Vec<(Action, bool)> {
         match kind {
             // value 2 is the kernel's own autorepeat; the dispatcher repeats instead.
             EV_KEY if value != 2 => self.keys.get(&code).map(|&a| vec![(a, value == 1)]).unwrap_or_default(),
-            EV_ABS => self.axes.get_mut(&code).map(|axis| axis.update(value)).unwrap_or_default(),
+            EV_ABS => self.axes.get_mut(&code).map(|axis| axis.update(value, now)).unwrap_or_default(),
             _ => Vec::new(),
         }
+    }
+
+    /// Fires any analog press that the rebound lockout held back and whose
+    /// window has ended, while the stick is still past the deadzone.
+    pub fn tick(&mut self, now: Instant) -> Vec<(Action, bool)> {
+        self.axes.values_mut().flat_map(|axis| axis.tick(now)).collect()
+    }
+
+    /// When `tick` next has something to do (the earliest lockout end), if any.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.axes.values().filter_map(Axis::deadline).min()
     }
 }
 
 impl Axis {
-    fn update(&mut self, value: i32) -> Vec<(Action, bool)> {
-        let pos = (value as f32 - self.center) / self.half;
+    fn update(&mut self, value: i32, now: Instant) -> Vec<(Action, bool)> {
+        self.pos = (value as f32 - self.center) / self.half;
+        self.evaluate(now)
+    }
+
+    /// The direction a press is waiting for: the stick is past the deadzone
+    /// but nothing is pressed (the lockout suppressed it).
+    fn pending(&self) -> Option<i8> {
+        if !self.analog || self.dir != 0 {
+            return None;
+        }
+        let dir = if self.pos >= self.deadzone { 1 } else if self.pos <= -self.deadzone { -1 } else { return None };
+        self.released.filter(|&(d, _)| d == -dir).map(|_| dir)
+    }
+
+    fn tick(&mut self, now: Instant) -> Vec<(Action, bool)> {
+        match self.pending() {
+            Some(_) => self.evaluate(now),
+            None => Vec::new(),
+        }
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.pending().and_then(|_| self.released).map(|(_, at)| at + REBOUND_LOCKOUT)
+    }
+
+    fn evaluate(&mut self, now: Instant) -> Vec<(Action, bool)> {
+        let pos = self.pos;
         let held = self.dir != 0 && pos * self.dir as f32 >= self.deadzone * RELEASE_FRACTION;
         let dir = if held {
             self.dir
@@ -257,10 +310,16 @@ impl Axis {
         };
         let mut out = Vec::new();
         if dir != self.dir {
-            if self.dir != 0 {
-                out.push((self.action(self.dir), false));
+            let was = self.dir;
+            if was != 0 {
+                out.push((self.action(was), false));
+                self.released = Some((was, now));
             }
-            if dir != 0 {
+            let rebound = self.analog
+                && dir != 0
+                && self.released.is_some_and(|(d, at)| d == -dir && now.saturating_duration_since(at) < REBOUND_LOCKOUT);
+            let dir = if rebound { 0 } else { dir };
+            if dir != 0 && dir != was {
                 out.push((self.action(dir), true));
             }
             self.dir = dir;
@@ -278,6 +337,15 @@ mod tests {
     use super::*;
 
     const ABS_X: u16 = 0;
+
+    /// A fixed instant for tests that don't care about time.
+    fn t0() -> Instant {
+        thread_local! { static T0: Instant = Instant::now(); }
+        T0.with(|t| *t)
+    }
+    fn ms(n: u64) -> Instant {
+        t0() + Duration::from_millis(n)
+    }
     const KEY_UP: u16 = 103;
 
     /// Enough of the kernel's names for these tests and the shipped files'
@@ -345,10 +413,10 @@ mod tests {
     fn keys_press_release_and_skip_autorepeat() {
         let m = Mapping::parse("t.toml", "[match]\nnames = [\"t\"]\n[keys]\nKEY_UP = \"Up\"\n", &fake_resolve).unwrap();
         let mut d = m.for_device(&gamepad("t", 0));
-        assert_eq!(d.translate(EV_KEY, KEY_UP, 1), vec![(Action::Up, true)]);
-        assert_eq!(d.translate(EV_KEY, KEY_UP, 2), vec![]);
-        assert_eq!(d.translate(EV_KEY, KEY_UP, 0), vec![(Action::Up, false)]);
-        assert_eq!(d.translate(EV_KEY, 999, 1), vec![]);
+        assert_eq!(d.translate(EV_KEY, KEY_UP, 1, t0()), vec![(Action::Up, true)]);
+        assert_eq!(d.translate(EV_KEY, KEY_UP, 2, t0()), vec![]);
+        assert_eq!(d.translate(EV_KEY, KEY_UP, 0, t0()), vec![(Action::Up, false)]);
+        assert_eq!(d.translate(EV_KEY, 999, 1, t0()), vec![]);
     }
 
     #[test]
@@ -360,15 +428,62 @@ mod tests {
 
         // drift and noise around the centre: nothing, ever
         for v in [0.0, 0.1, -0.2, 0.39, -0.39, 0.05] {
-            assert_eq!(d.translate(EV_ABS, ABS_X, at(v)), vec![], "at {v}");
+            assert_eq!(d.translate(EV_ABS, ABS_X, at(v), t0()), vec![], "at {v}");
         }
-        assert_eq!(d.translate(EV_ABS, ABS_X, at(0.5)), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, ABS_X, at(0.5), t0()), vec![(Action::Right, true)]);
         // wobbling just under the deadzone keeps it held
-        assert_eq!(d.translate(EV_ABS, ABS_X, at(0.32)), vec![]);
-        assert_eq!(d.translate(EV_ABS, ABS_X, at(0.2)), vec![(Action::Right, false)]);
-        assert_eq!(d.translate(EV_ABS, ABS_X, at(0.9)), vec![(Action::Right, true)]);
-        // flick straight across
-        assert_eq!(d.translate(EV_ABS, ABS_X, at(-0.9)), vec![(Action::Right, false), (Action::Left, true)]);
+        assert_eq!(d.translate(EV_ABS, ABS_X, at(0.32), t0()), vec![]);
+        assert_eq!(d.translate(EV_ABS, ABS_X, at(0.2), t0()), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, ABS_X, at(0.9), t0()), vec![(Action::Right, true)]);
+        // A jump straight across releases at once; the opposite press waits out
+        // the rebound lockout and fires on the next event after it.
+        assert_eq!(d.translate(EV_ABS, ABS_X, at(-0.9), ms(500)), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, ABS_X, at(-0.9), ms(700)), vec![(Action::Left, true)]);
+    }
+
+    #[test]
+    fn tick_fires_held_back_reversal_without_new_events() {
+        let text = "deadzone = 0.4\n[match]\nnames = [\"t\"]\n[axes]\nABS_X = [\"Left\", \"Right\"]\n";
+        let m = Mapping::parse("t.toml", text, &fake_resolve).unwrap();
+        let mut d = m.for_device(&gamepad("t", 0));
+        let at = |x: f32| (x * 32767.0) as i32;
+        assert_eq!(d.deadline(), None);
+        assert_eq!(d.translate(EV_ABS, ABS_X, at(0.9), ms(0)), vec![(Action::Right, true)]);
+        assert_eq!(d.deadline(), None);
+        // Quick reversal: release now, Left held back; no more events arrive.
+        assert_eq!(d.translate(EV_ABS, ABS_X, at(-0.9), ms(100)), vec![(Action::Right, false)]);
+        assert_eq!(d.deadline(), Some(ms(250)));
+        assert_eq!(d.tick(ms(200)), vec![]);
+        assert_eq!(d.tick(ms(250)), vec![(Action::Left, true)]);
+        assert_eq!(d.deadline(), None);
+        assert_eq!(d.tick(ms(400)), vec![]);
+    }
+
+    #[test]
+    fn tick_does_nothing_if_stick_returned_to_centre() {
+        let text = "deadzone = 0.4\n[match]\nnames = [\"t\"]\n[axes]\nABS_X = [\"Left\", \"Right\"]\n";
+        let m = Mapping::parse("t.toml", text, &fake_resolve).unwrap();
+        let mut d = m.for_device(&gamepad("t", 0));
+        let at = |x: f32| (x * 32767.0) as i32;
+        d.translate(EV_ABS, ABS_X, at(0.9), ms(0));
+        d.translate(EV_ABS, ABS_X, at(-0.9), ms(100));
+        assert!(d.deadline().is_some());
+        d.translate(EV_ABS, ABS_X, 0, ms(120));
+        assert_eq!(d.deadline(), None);
+        assert_eq!(d.tick(ms(300)), vec![]);
+    }
+
+    #[test]
+    fn tick_ignores_hats() {
+        let text = "[match]\nnames = [\"t\"]\n[axes]\nABS_X = [\"Up\", \"Down\"]\n";
+        let m = Mapping::parse("t.toml", text, &fake_resolve).unwrap();
+        let mut dev = gamepad("t", 0);
+        dev.axes = vec![(ABS_X, -1, 1)];
+        let mut d = m.for_device(&dev);
+        d.translate(EV_ABS, ABS_X, -1, ms(0));
+        d.translate(EV_ABS, ABS_X, 1, ms(10));
+        assert_eq!(d.deadline(), None);
+        assert_eq!(d.tick(ms(500)), vec![]);
     }
 
     #[test]
@@ -378,9 +493,9 @@ mod tests {
         let mut dev = gamepad("t", 0);
         dev.axes = vec![(ABS_X, -1, 1)];
         let mut d = m.for_device(&dev);
-        assert_eq!(d.translate(EV_ABS, ABS_X, -1), vec![(Action::Up, true)]);
-        assert_eq!(d.translate(EV_ABS, ABS_X, 0), vec![(Action::Up, false)]);
-        assert_eq!(d.translate(EV_ABS, ABS_X, 1), vec![(Action::Down, true)]);
+        assert_eq!(d.translate(EV_ABS, ABS_X, -1, t0()), vec![(Action::Up, true)]);
+        assert_eq!(d.translate(EV_ABS, ABS_X, 0, t0()), vec![(Action::Up, false)]);
+        assert_eq!(d.translate(EV_ABS, ABS_X, 1, t0()), vec![(Action::Down, true)]);
     }
 
     // A DualSense as hid-playstation reports it: sticks and triggers 0..255,
@@ -436,23 +551,23 @@ mod tests {
     #[test]
     fn dualsense_buttons_and_dpad_map_to_actions() {
         let mut d = dualsense_map(DS_BT);
-        assert_eq!(d.translate(EV_KEY, code("BTN_MODE"), 1), vec![(Action::Home, true)]);
-        assert_eq!(d.translate(EV_KEY, code("BTN_MODE"), 0), vec![(Action::Home, false)]);
-        assert_eq!(d.translate(EV_KEY, code("BTN_SOUTH"), 1), vec![(Action::Select, true)]);
-        assert_eq!(d.translate(EV_KEY, code("BTN_EAST"), 1), vec![(Action::Back, true)]);
-        assert_eq!(d.translate(EV_KEY, code("BTN_START"), 1), vec![(Action::Menu, true)]);
+        assert_eq!(d.translate(EV_KEY, code("BTN_MODE"), 1, t0()), vec![(Action::Home, true)]);
+        assert_eq!(d.translate(EV_KEY, code("BTN_MODE"), 0, t0()), vec![(Action::Home, false)]);
+        assert_eq!(d.translate(EV_KEY, code("BTN_SOUTH"), 1, t0()), vec![(Action::Select, true)]);
+        assert_eq!(d.translate(EV_KEY, code("BTN_EAST"), 1, t0()), vec![(Action::Back, true)]);
+        assert_eq!(d.translate(EV_KEY, code("BTN_START"), 1, t0()), vec![(Action::Menu, true)]);
         // Square, Triangle and Create do nothing.
         for n in ["BTN_WEST", "BTN_NORTH", "BTN_SELECT"] {
-            assert_eq!(d.translate(EV_KEY, code(n), 1), vec![], "{n}");
+            assert_eq!(d.translate(EV_KEY, code(n), 1, t0()), vec![], "{n}");
         }
         let (hx, hy) = (code("ABS_HAT0X"), code("ABS_HAT0Y"));
-        assert_eq!(d.translate(EV_ABS, hx, 1), vec![(Action::Right, true)]);
-        assert_eq!(d.translate(EV_ABS, hx, 0), vec![(Action::Right, false)]);
-        assert_eq!(d.translate(EV_ABS, hx, -1), vec![(Action::Left, true)]);
-        assert_eq!(d.translate(EV_ABS, hx, 0), vec![(Action::Left, false)]);
-        assert_eq!(d.translate(EV_ABS, hy, -1), vec![(Action::Up, true)]);
-        assert_eq!(d.translate(EV_ABS, hy, 0), vec![(Action::Up, false)]);
-        assert_eq!(d.translate(EV_ABS, hy, 1), vec![(Action::Down, true)]);
+        assert_eq!(d.translate(EV_ABS, hx, 1, t0()), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, hx, 0, t0()), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, hx, -1, t0()), vec![(Action::Left, true)]);
+        assert_eq!(d.translate(EV_ABS, hx, 0, t0()), vec![(Action::Left, false)]);
+        assert_eq!(d.translate(EV_ABS, hy, -1, t0()), vec![(Action::Up, true)]);
+        assert_eq!(d.translate(EV_ABS, hy, 0, t0()), vec![(Action::Up, false)]);
+        assert_eq!(d.translate(EV_ABS, hy, 1, t0()), vec![(Action::Down, true)]);
     }
 
     #[test]
@@ -462,15 +577,15 @@ mod tests {
         // Resting 120..136 around the 0..255 centre, many updates.
         for i in 0..2000 {
             let v = 120 + (i * 7) % 17;
-            assert_eq!(d.translate(EV_ABS, x, v), vec![], "x {v}");
-            assert_eq!(d.translate(EV_ABS, y, 136 - (i * 5) % 17), vec![], "y at update {i}");
+            assert_eq!(d.translate(EV_ABS, x, v, t0()), vec![], "x {v}");
+            assert_eq!(d.translate(EV_ABS, y, 136 - (i * 5) % 17, t0()), vec![], "y at update {i}");
         }
         // A real push still works: 255 is Right, back to rest releases.
-        assert_eq!(d.translate(EV_ABS, x, 255), vec![(Action::Right, true)]);
-        assert_eq!(d.translate(EV_ABS, x, 128), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, x, 255, t0()), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, x, 128, t0()), vec![(Action::Right, false)]);
         // The right stick, triggers and a DualSense without ABS_RX mapping stay silent.
         for n in ["ABS_RX", "ABS_RY", "ABS_Z", "ABS_RZ"] {
-            assert_eq!(d.translate(EV_ABS, code(n), 255), vec![], "{n}");
+            assert_eq!(d.translate(EV_ABS, code(n), 255, t0()), vec![], "{n}");
         }
     }
 
@@ -487,5 +602,171 @@ mod tests {
         for text in bad {
             assert!(Mapping::parse("t.toml", text, &fake_resolve).is_err(), "accepted: {text}");
         }
+    }
+
+    fn flick_map() -> DeviceMap {
+        dualsense_map(DS_BT)
+    }
+
+    #[test]
+    fn stick_flick_overshoot_does_not_fire_the_opposite_direction() {
+        let mut d = flick_map();
+        let x = code("ABS_X");
+        assert_eq!(d.translate(EV_ABS, x, 255, ms(0)), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, x, 128, ms(20)), vec![(Action::Right, false)]);
+        // Spring-back overshoot to the left within the lockout: silent.
+        assert_eq!(d.translate(EV_ABS, x, 40, ms(40)), vec![]);
+        assert_eq!(d.translate(EV_ABS, x, 100, ms(60)), vec![]);
+        assert_eq!(d.translate(EV_ABS, x, 128, ms(80)), vec![]);
+        // Same for a left flick overshooting right.
+        assert_eq!(d.translate(EV_ABS, x, 0, ms(1000)), vec![(Action::Left, true)]);
+        assert_eq!(d.translate(EV_ABS, x, 128, ms(1020)), vec![(Action::Left, false)]);
+        assert_eq!(d.translate(EV_ABS, x, 230, ms(1040)), vec![]);
+        assert_eq!(d.translate(EV_ABS, x, 128, ms(1060)), vec![]);
+    }
+
+    #[test]
+    fn stick_deliberate_reversal_fires_after_the_lockout() {
+        let mut d = flick_map();
+        let x = code("ABS_X");
+        assert_eq!(d.translate(EV_ABS, x, 255, ms(0)), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, x, 128, ms(20)), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, x, 0, ms(20 + 200)), vec![(Action::Left, true)]);
+        // Held past the window: the next event fires it.
+        let mut d = flick_map();
+        assert_eq!(d.translate(EV_ABS, x, 255, ms(0)), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, x, 128, ms(20)), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, x, 0, ms(60)), vec![]);
+        assert_eq!(d.translate(EV_ABS, x, 2, ms(200)), vec![(Action::Left, true)]);
+    }
+
+    #[test]
+    fn stick_same_direction_and_other_axis_are_not_locked() {
+        let mut d = flick_map();
+        let (x, y) = (code("ABS_X"), code("ABS_Y"));
+        assert_eq!(d.translate(EV_ABS, x, 255, ms(0)), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, x, 128, ms(10)), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, x, 255, ms(20)), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, x, 128, ms(30)), vec![(Action::Right, false)]);
+        // Y is independent of X's lockout, and has its own.
+        assert_eq!(d.translate(EV_ABS, y, 255, ms(40)), vec![(Action::Down, true)]);
+        assert_eq!(d.translate(EV_ABS, y, 128, ms(50)), vec![(Action::Down, false)]);
+        assert_eq!(d.translate(EV_ABS, y, 0, ms(60)), vec![]);
+        assert_eq!(d.translate(EV_ABS, x, 0, ms(200)), vec![(Action::Left, true)]);
+    }
+
+    #[test]
+    fn hat_axis_is_never_locked_out() {
+        let mut d = dualsense_map(DS_BT);
+        let hx = code("ABS_HAT0X");
+        assert_eq!(d.translate(EV_ABS, hx, 1, ms(0)), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, hx, 0, ms(5)), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, hx, -1, ms(10)), vec![(Action::Left, true)]);
+        // A straight hat flip is instant too.
+        assert_eq!(d.translate(EV_ABS, hx, 1, ms(15)), vec![(Action::Left, false), (Action::Right, true)]);
+    }
+
+
+    #[test]
+    fn rebound_lockout_edge_is_exclusive_at_exactly_150_ms() {
+        let x = code("ABS_X");
+        // 149 ms after the release: still locked out.
+        let mut d = flick_map();
+        assert_eq!(d.translate(EV_ABS, x, 255, ms(0)), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, x, 128, ms(100)), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, x, 0, ms(100 + 149)), vec![]);
+        // Exactly 150 ms: the window has ended, so the press fires.
+        let mut d = flick_map();
+        assert_eq!(d.translate(EV_ABS, x, 255, ms(0)), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, x, 128, ms(100)), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, x, 0, ms(100 + 150)), vec![(Action::Left, true)]);
+    }
+
+    #[test]
+    fn direct_flip_across_the_stick_is_locked_for_the_new_side() {
+        // One event jumps from full right to full left: Right releases, and
+        // Left is swallowed as the rebound of that release.
+        let mut d = flick_map();
+        let x = code("ABS_X");
+        assert_eq!(d.translate(EV_ABS, x, 255, ms(0)), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, x, 0, ms(10)), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, x, 0, ms(300)), vec![(Action::Left, true)]);
+    }
+
+    #[test]
+    fn two_axes_keep_independent_lockouts() {
+        let mut d = flick_map();
+        let (x, y) = (code("ABS_X"), code("ABS_Y"));
+        assert_eq!(d.translate(EV_ABS, x, 255, ms(0)), vec![(Action::Right, true)]);
+        assert_eq!(d.translate(EV_ABS, x, 128, ms(10)), vec![(Action::Right, false)]);
+        assert_eq!(d.translate(EV_ABS, y, 0, ms(20)), vec![(Action::Up, true)]);
+        assert_eq!(d.translate(EV_ABS, y, 128, ms(30)), vec![(Action::Up, false)]);
+        // Overshoots on both axes inside their own windows are both silent.
+        assert_eq!(d.translate(EV_ABS, x, 0, ms(40)), vec![]);
+        assert_eq!(d.translate(EV_ABS, y, 255, ms(50)), vec![]);
+        // X's window ended (10 + 150), Y's has not (30 + 150).
+        assert_eq!(d.translate(EV_ABS, x, 0, ms(165)), vec![(Action::Left, true)]);
+        assert_eq!(d.translate(EV_ABS, y, 255, ms(170)), vec![]);
+        assert_eq!(d.translate(EV_ABS, y, 255, ms(181)), vec![(Action::Down, true)]);
+    }
+
+    #[test]
+    fn hat_reversal_inside_150_ms_still_fires_on_the_vertical_hat_too() {
+        let mut d = dualsense_map(DS_BT);
+        let hy = code("ABS_HAT0Y");
+        assert_eq!(d.translate(EV_ABS, hy, -1, ms(0)), vec![(Action::Up, true)]);
+        assert_eq!(d.translate(EV_ABS, hy, 0, ms(1)), vec![(Action::Up, false)]);
+        assert_eq!(d.translate(EV_ABS, hy, 1, ms(2)), vec![(Action::Down, true)]);
+    }
+
+    fn user_dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("lumen-mapping-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn load_user_file_replaces_shipped_and_adds_new_ones() {
+        let dir = user_dir("override");
+        // Same name as a shipped file: replaces it (this one only maps BTN_EAST).
+        std::fs::write(dir.join("xbox.toml"), "[match]\nids = [\"045e\"]\n[keys]\nBTN_EAST = \"Back\"\n").unwrap();
+        std::fs::write(dir.join("mine.toml"), "[match]\nnames = [\"zzz pad\"]\n[keys]\nBTN_SOUTH = \"Select\"\n").unwrap();
+        std::fs::write(dir.join("notes.txt"), "[match\n").unwrap();
+        let m = load(Some(&dir), &fake_resolve);
+        assert_eq!(m.len(), SHIPPED.len() + 1);
+        assert!(m.iter().any(|x| x.file == "mine.toml"));
+        let mut dev = gamepad("Xbox Wireless Controller", 0x045e);
+        dev.keys.push(code("BTN_EAST"));
+        let chosen = choose(&m, &dev).unwrap();
+        assert_eq!(chosen.file, "xbox.toml");
+        let mut d = chosen.for_device(&dev);
+        // The replaced xbox.toml maps only BTN_EAST.
+        assert_eq!(d.translate(EV_KEY, code("BTN_EAST"), 1, t0()), vec![(Action::Back, true)]);
+        assert_eq!(d.translate(EV_KEY, BTN_SOUTH, 1, t0()), vec![]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_broken_user_file_keeps_shipped_version_and_other_files_load() {
+        let dir = user_dir("broken");
+        std::fs::write(dir.join("xbox.toml"), "[match\nthis is not toml").unwrap();
+        std::fs::write(dir.join("typo.toml"), "[match]\nnames = [\"t\"]\n[keys]\nKEY_UP = \"Jump\"\n").unwrap();
+        std::fs::write(dir.join("good.toml"), "[match]\nnames = [\"good\"]\n[keys]\nKEY_UP = \"Up\"\n").unwrap();
+        let m = load(Some(&dir), &fake_resolve);
+        // Shipped five, plus only good.toml.
+        assert_eq!(m.len(), SHIPPED.len() + 1);
+        assert!(m.iter().any(|x| x.file == "good.toml"));
+        assert!(!m.iter().any(|x| x.file == "typo.toml"));
+        let dev = gamepad("Xbox Wireless Controller", 0x045e);
+        let mut d = choose(&m, &dev).unwrap().for_device(&dev);
+        assert_eq!(d.translate(EV_KEY, BTN_SOUTH, 1, t0()), vec![(Action::Select, true)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_with_missing_user_dir_gives_only_shipped_files() {
+        let missing = std::env::temp_dir().join(format!("lumen-mapping-nope-{}", std::process::id()));
+        assert_eq!(load(Some(&missing), &fake_resolve).len(), SHIPPED.len());
     }
 }
