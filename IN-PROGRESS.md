@@ -1,19 +1,14 @@
 # In Progress — Lumen (lumen-tv)
 
-Last updated: 2026-10-20
+Last updated: 2026-10-22
 
 ## Where we are
-Lumen's UI is Slint (femtovg), 60 fps at 1080p60 and 4K60 on the TV. Done: M3 (registry, icon tiles, Jellyfin/Steam Link/Kodi launch, Home from any app), M3.5 (Settings/diagnostics; the LG remote drives everything, red = Home), M4 (Store: flatpak `--user` installs from `store/manifest.json`, live tiles) and M4.5 (2026-10-20): Settings → Bluetooth pairs the PS5 DualSense with the remote alone; the pad drives Lumen, Jellyfin (as keys) and Steam Link (directly). **Now: M5 boot session + polish** (started 2026-10-21, ahead of the root install helper (PIN) milestone, which MILESTONES.md still lists first; confirm/record the order). Kodi still boots by default; Lumen runs from `lumen-test.service`.
+Lumen's UI is Slint (femtovg), 60 fps at 1080p60 and 4K60 on the TV. Done: M3 (registry, icon tiles, Jellyfin/Steam Link/Kodi launch, Home from any app), M3.5 (Settings/diagnostics; the LG remote drives everything, red = Home), M4 (Store: flatpak `--user` installs from `store/manifest.json`, live tiles) and M4.5 (2026-10-20): Settings → Bluetooth pairs the PS5 DualSense with the remote alone; the pad drives Lumen, Jellyfin (as keys) and Steam Link (directly). **Now: M5 boot session + polish: built and committed (d223a51 + Display-panel fix), TV testing in progress** (T1, T2 passed 2026-10-22; T3 found a bug, fixed, needs a re-test). Kodi still boots by default; Lumen runs from `lumen-test.service`. M5 was started ahead of the root install helper (PIN) milestone, which MILESTONES.md still lists first; confirm/record the order.
 
 ## Active Plan
 Order: M5 → root helper → M5.5 → M6 (see MILESTONES.md), stopping after each one for a TV test.
 
-**M5 (plan in AGENT_JOBS.md, transient).** Laith is away from the TV, so this round builds and checks only on the Mac and over ssh; the Gate and all TV checks are the T0-T14 checklist at the end of AGENT_JOBS.md.
-- Phase 1 (parallel): 1.1 stick rebound lockout (`src/input/mapping.rs`, `devices.rs`, fake-pad `flick`) · 1.2 `session/lumen.service` + `session/install.sh` (dry run by default; `--apply`, `--set-default`, `--revert`, `--quiet-boot`) + saved mode in `start-lumen.sh` · 1.3 `src/settings.rs` (`~/.config/lumen-tv/settings.toml`: `mode`, `store_url`) + `src/platform/output.rs` (re-applies the saved mode when HDMI-A-1 reappears) + store URL precedence.
-- Phase 2: 2.1 Settings UI: Toggles → Resolution (1080p60/4K60), Mappings panel, About panel (version/commit, manifest URL), build info; first Pi build.
-- Phase 3 (parallel): review, simplify, test gaps, README.md.
-- Phase 4: tester: Mac build/test/clippy, Pi build/test/examples, `install.sh` dry run + `systemd-analyze verify` on the Pi. Kodi stays enabled.
-- Not now (needs Laith): installing lumen.service, switching the boot default, any sudo, the visual polish pass, the Gate.
+**M5:** all code is built (Mac 280 tests, Pi 288 tests pass). What's left is the TV checklist under Current Work, then the visual-polish fixes from T14, then closing M5.
 
 Layout (as built):
 ```
@@ -36,12 +31,14 @@ lumen-tv/
     platform/mod.rs        traits: Windows, Tv
     platform/pi.rs         CEC remote claim (cec-ctl) + OK/Back keymap remap
     platform/toplevel.rs   labwc wlr-foreign-toplevel
+    platform/output.rs     HDMI mode watcher (re-applies the saved mode)
+    settings.rs            ~/.config/lumen-tv/settings.toml (mode, store_url)
   ui/                      app.slint (screens, focus), settings.slint, bluetooth.slint, store.slint, details.slint, tile.slint, theme.slint
   config/input/            keyboard, xbox, playstation, gamepad, cec-remote (.toml)
   config/apps/             default registry entries; config/kodi-tile = Kodi tile launcher (CEC off)
   examples/                fake-pad.rs, press.rs, toplevels.rs (gate tools)
   store/manifest.json      the Store's app list (served from GitHub raw)
-  session/                 labwc rc.xml, start-lumen.sh, lumen-test.service, sudoers
+  session/                 labwc rc.xml, start-lumen.sh, lumen.service (boot unit), lumen-test.service, install.sh (dry run unless --apply), sudoers
   scripts/pi-build.sh      rsync to pitv + cargo build --release there
 ```
 
@@ -100,56 +97,33 @@ Decisions so far:
 - `if`-created drop-shadow elements re-blur every time they are created; use one fixed shadow Image and fade it.
 
 ## Current Work
-- M5 (2026-10-21): planned in AGENT_JOBS.md; Phase 1 not started. Settings contract: mode precedence settings.toml `mode` > `LUMEN_MODE` > 1080p60; store precedence settings.toml `store_url` > `LUMEN_STORE_URL` > default.
+**M5 TV checklist** (Laith at the TV; mark each one as it's done). Parts A-B change nothing permanent. Part C switches the boot default (undo: `sudo sh ~/lumen-tv/session/install.sh --apply --revert && sudo reboot`).
 
-### Review — M5 Phases 1-2 (Job 3.1, 2026-10-21)
-**Summary:** Scope is complete and mostly solid: the watcher can't loop (3-attempt cap, reset only on reappear/new target, never applies when the mode matches), settings.toml is written atomically in the exact `mode = "…"` line and start-lumen.sh validates it, install.sh is a real dry run with validated user/home and visudo before install. lumen.service with `Restart=always` + `StartLimitBurst=3/60s` + `OnFailure=kodi.service` + `Conflicts=` is correct (see FYI). Four behaviour bugs need a patch before the TV session: a held stick reversal can go dead, the Resolution toggle can get stuck, a given-up watcher reads "applying…" forever, and a broken settings.toml floods the Log panel. Not ready for TV testing until those are fixed.
+Part A, start the newest build (from the Mac; sudoers allows these without a password):
+```sh
+ssh pitv 'sudo systemctl stop lumen-test.service'
+ssh pitv 'systemctl is-active kodi.service'     # repeat until "active"
+ssh pitv 'sudo systemctl start --no-block lumen-test.service'
+```
+Part B, with lumen-test:
+- [x] T1 Stick rebound (2026-10-22 pass): 10 flicks each way move one tile, no snap-back; quick right-then-left and a held reversal work; d-pad unchanged. Optional: `cd ~/lumen-tv && ./target/release/examples/fake-pad flick` with Input debug on.
+- [x] T2 Resting stick, 60 s, no events (2026-10-22 pass).
+- [ ] T3 Settings → Toggles → Resolution to 4K60 and back. 2026-10-22: the switch worked (wlr-randr showed 3840x2160 current, log `[display] re-applied 3840x2160@60`) but the Display panel kept showing 1080p: it read wlr-randr only when Settings opened. Fixed (main.rs `Sources::seen_output`: re-read wlr-randr when the watcher's current mode changes); built on the Pi, **re-test**: within ~2-3 s of a switch the Display panel shows the new mode, Resolution row "active", tiles sharp.
+- [ ] T4 Survives a TV power-cycle: with 1080p60 saved, TV off/on → Display shows 1920x1080 again within ~5 s. Repeat with 4K60 saved.
+- [ ] T5 Survives a Lumen restart (Part A stop/start): comes back in the saved mode.
+- [ ] T6 Mappings readable from the couch; About shows version/commit/manifest URL. Break the file: `ssh pitv 'echo bogus >> ~/.config/lumen-tv/settings.toml'` → About shows an error row, Log logs it once, the Resolution row says "not saved: …" on a switch. Restore: `ssh pitv 'sed -i "/^bogus$/d" ~/.config/lumen-tv/settings.toml'`.
+- [ ] T7 Bench (Pi cooled): Settings → Toggles → Run benchmark at 1080p and 4K, Settings open and at Home: ≥ 59 fps, < 2% slow.
 
-**Required**
-1. `src/input/mapping.rs` `Axis::update` + `src/input/devices.rs` `run`: a suppressed reversal fires only on the next event from that axis. At full deflection a DualSense stick reads a steady 0/255, and the kernel input core drops repeated identical ABS values, so no further event arrives. Right flick, then a fast push to full Left within 150 ms of the release: Left never fires (and never auto-repeats) until the thumb moves. Release happens at |pos| < 0.3, so a quick reversal reaches the limit well within 150 ms. Fix: keep the last `pos` on `Axis`, add `DeviceMap::tick(now) -> Vec<(Action,bool)>` that presses any axis whose lockout has expired while it is still past the deadzone, expose `DeviceMap::deadline()`, and use `min(dispatch.deadline(), map deadlines)` in the reader's `recv_timeout`. Add a test: 255@0, 128@20, 0@40, then `tick(ms(171))` → Left press. (Builder item 4: this is a real bug, not acceptable as is.)
-2. `src/main.rs` `on_toggle_resolution`: "current" is re-read from settings.toml, and a failed save is only `println!`ed. With an unreadable or broken settings.toml (`load` → defaults, `save_mode` refuses to overwrite), every press computes 1080p → 4K, so you can switch to 4K but never back from the UI. Fix: toggle from `platform::output::status().desired` (the live target), and show the save error in the Resolution row's detail (e.g. "4K60 · not saved: …", ERROR level).
-3. `src/diag.rs` `resolution_detail` reads `last_result` text for "fail"/"error". `output::apply` errors look like `wlr-randr 3840x2160@60: <first stderr line>` or `wlr-randr: No such file or directory`, which usually contain neither. After the 3-attempt cap the row says "applying…" forever. Fix: carry the outcome as a type. Add `last_ok: Option<bool>` and `gave_up: bool` (from `state.attempts >= MAX_ATTEMPTS`) to `DisplayStatus`, map them to "failed: …"/"gave up after 3 tries" at ERROR, and drop the substring match.
-4. `src/main.rs` `Sources::panels` (runs every 1 s while Settings is open): it calls `settings::mode()`, `store::source_with_origin()` and `settings::load()`, so it reads settings.toml 3×/s, and with a broken file the first two each `eprintln!("[settings] …")`. That is 2 log lines/s into logtail, so the Log panel fills with them during exactly the T6 check. Fix: `load()` once per refresh, pass the `Settings` into `resolve_mode`/`resolve_store_url` (they are already pure), and log a settings error only when it changes (keep the last one in `Sources`).
-5. `src/diag.rs` `SHIPPED_MAPPINGS` is a copy of `input::mapping::SHIPPED` (which is already `pub`; only `mod mapping` is private). A 6th shipped file added to one list makes the Mappings panel wrong. Fix: `pub use mapping::SHIPPED;` in `src/input/mod.rs`, then use `input::SHIPPED` in main.rs/diag.rs and delete `SHIPPED_MAPPINGS` + `shipped_has`'s copy (`shipped_has` can take the slice). (Builder item 3: agreed.)
+Part C, boot switch (Laith's sudo, on the Pi):
+- [ ] T8 `sh ~/lumen-tv/session/install.sh` (dry run, read it), then `sudo sh ~/lumen-tv/session/install.sh --apply` (boot default unchanged).
+- [ ] T9 `sudo sh ~/lumen-tv/session/install.sh --apply --quiet-boot --set-default`, then `sudo reboot`.
+- [ ] T10 **Gate part 1:** unplug/replug 3×: lands on Lumen with no console text or desktop after the splash. Note pointer, background flash, text.
+- [ ] T11 Rescue: `ssh pitv 'pkill -SEGV -x lumen-tv'` 3× (wait for Lumen to come back between) → Kodi comes up. Then `sudo systemctl reset-failed lumen.service && sudo systemctl start lumen.service`.
+- [ ] T12 **Gate part 2 (BRIEF §11):** (a) power-on lands on Lumen; (b) remote + DualSense navigate Home, Store, Settings, every panel (Laith to confirm the DualSense counts for BRIEF's "Xbox controller"); (c) red/PS returns to Lumen from Jellyfin and Steam Link; (d) Jellyfin resumes (same PID), Steam Link closes others on launch and itself on Home; (e) a Store install (KolourPaint) appears on Home without a restart, then uninstall; (f) animations smooth; (g) README covers setup, adding an app, a controller mapping, another manifest.
+- [ ] T13 DualSense first reconnect after power-off: does the first PS press register? (M4.5 G4 flake.)
+- [ ] T14 Visual polish walk-through: note overscan margins, text sizes, focus visuals, transitions, Store/Details/Bluetooth layouts → becomes a follow-up builder job before M5 closes.
 
-**Nit / FYI**
-- Nit `src/settings.rs`: `save_store_url` is unused (nothing in the UI writes `store_url`; About says to edit the file). Delete it. Keep `save_store_url_to` only if tests need it, or write the fixture with `write_to`. (Builder item 5.)
-- Nit `session/start-lumen.sh`: the sed only matches the exact `mode = "…"` line. A hand-edited `mode="3840x2160@60"` or `mode = '…'` is valid TOML that Lumen accepts, but the script ignores it, so the session starts at the env/default mode and the watcher switches about 2 s later (a visible mode flash). Use `s/^[[:space:]]*mode[[:space:]]*=[[:space:]]*["']\([^"']*\)["'].*/\1/p`.
-- Nit `build.rs`: no `rerun-if-changed=.git/HEAD`, so Mac builds keep a stale commit and date after a new commit, and Pi builds keep the old build date when `LUMEN_GIT` is unchanged. Add `cargo:rerun-if-changed=.git/HEAD` (+ `.git/index` for dirty state).
-- FYI builder item 1 (now `Restart=always`), checked: (a) Lumen/labwc exiting, cleanly or by crash, restarts after 2 s. This matters because labwc `-S` exits 0 when Lumen dies, so `on-failure` would never have fired. (b) A stop caused by `Conflicts=` (starting kodi/steamlink/uxplay/lumen-test, or `systemctl stop`) is a stop job and is not restarted, so there is no loop. Conflicts work in both directions. (c) `StartLimitBurst=3` counts the first start, so the 3rd exit within 60 s ends in `start-limit-hit` → `failed` → `OnFailure=kodi.service` runs. Lumen is already inactive, so `Conflicts=kodi` doesn't block it. (d) Lumen has no Power/exit action except Ctrl+Q on a keyboard, which now just restarts it. Two corrections for T11/README: SEGV ×3 (not ×4) triggers the rescue, and after `start-limit-hit` a plain `systemctl start lumen.service` is refused for 60 s. Use `sudo systemctl reset-failed lumen.service && sudo systemctl start lumen.service`. In rescue Kodi, the Steam Link/Screen Mirror favourites return to Kodi, not Lumen (their ExecStopPost); that's fine until M6.
-- FYI builder item 2: nothing in Lumen calls `systemctl` (grep: no hits in src/ or ui/). Kodi and Steam Link run inside the labwc session, and with `Restart=always` a "restart Lumen" action is just exiting. So sudoers-lumen needs no lumen.service rights. Note: install.sh never updates `/etc/sudoers.d/lumen` once it exists, so a later change to `sudoers-lumen` needs a manual step. Also, the cmdline.txt write is `cat tmp > cmdline` (truncate, then write) on FAT /boot; writing a temp file in `/boot/firmware` and `mv` over it is safer.
-
-**What works well:** `output::decide` is a pure, well-tested state machine. The watcher thread only runs commands, and `request_mode` drains to the newest target. `settings::update` refuses to save over a file it can't parse, so a typo never wipes `store_url`. install.sh's `run()` wrapper makes the dry run structural rather than per-step, and the user/home charset checks close the sed-substitution injection path before the unit and sudoers are rendered.
-
-**Verdict:** Patch and ship. Fix Required 1-5 (owners: 1 → Job 1.1; 2, 4 → Job 2.1; 3 → Jobs 1.3 + 2.1; 5 → Jobs 1.1 + 2.1), then Phase 4.
-
-### Test Results — Job 4.1 (tester, 2026-10-21)
-**Verdict: FAIL on one check (step 6, Kodi active). Every build, test and lint step passed.** Code is not changed; the Kodi state is the running `lumen-test.service` (see below), not a build error. No units were started, stopped, enabled or disabled, no sudo, no `install.sh --apply`.
-
-| # | Command | Exit | Result |
-|---|---|---|---|
-| 1a | Mac `~/.cargo/bin/cargo build` | 0 | Finished dev profile, no errors |
-| 1b | Mac `~/.cargo/bin/cargo test` | 0 | `test result: ok. 280 passed; 0 failed; 2 ignored` |
-| 2 | Mac `~/.cargo/bin/cargo clippy --all-targets` | 0 | 5 warnings (not errors): `src/bluetooth.rs:432` div_ceil; `src/icons.rs:42` and `:70` large size difference; `src/input/mapping.rs:296` unnecessary closure (**file changed since 4fb802d**); `src/store.rs:463` is_multiple_of (**file changed since 4fb802d**) |
-| 3 | Mac `sh -n session/start-lumen.sh` / `sh -n session/install.sh` | 0 / 0 | Both parse (install.sh has `#!/bin/sh`). `shellcheck` is not installed, so not run |
-| 4a | `scripts/pi-build.sh` (rsync + `cargo build --release`) | 0 | `Finished release profile [optimized] in 1m 57s`, no errors or warnings. `devices.rs` and `output.rs` compiled on the Pi with no errors |
-| 4b | `ssh pitv 'cd lumen-tv && ~/.cargo/bin/cargo test --release'` | 0 | `test result: ok. 288 passed; 0 failed; 2 ignored` |
-| 4c | `ssh pitv 'cd lumen-tv && ~/.cargo/bin/cargo build --release --examples'` | 0 | `Finished release profile` (examples already built by 4b; no errors) |
-| 5a | `./target/release/lumen-tv --store-check` | 0 | `4 apps, 0 errors` |
-| 5b | `sh session/install.sh` (dry run) | 0 | Changed nothing. Plan: apt install list (labwc wlr-randr xwayland chromium flatpak v4l-utils bluez pipewire pipewire-pulse pipewire-alsa wireplumber build-essential pkg-config rsync curl + dev libs); groups already set; uinput already OK; would install `/etc/systemd/system/lumen.service`; sudoers already installed. Summary: "Boot default unchanged. lumen.service is installed but not enabled" (that summary line is printed by the script's text, not by a real state check) |
-| 5c | `systemd-analyze verify ~/lumen-tv/session/lumen.service` | 0 | No output (no warnings) |
-| 5d | `cat ~/.config/lumen-tv/env` | 0 | Empty or absent: `LUMEN_MODE` / `LUMEN_STORE_URL` are not set there |
-| 5e | `ls ~/.config/lumen-tv/settings.toml` | 2 | `No such file or directory` (expected, not created yet) |
-| 6a | `systemctl is-enabled kodi.service` | 0 | `enabled` |
-| 6b | `systemctl is-active kodi.service` | **3** | `inactive` (**expected Kodi to be active; it is not**) |
-| 6c | `systemctl is-enabled lumen.service` | 4 | `not-found` (correct: lumen.service is not installed) |
-
-**Why Kodi is inactive (step 6b):** `lumen-test.service` is `active (running)` since 23:23:35, and its `Conflicts=kodi.service` stopped Kodi at that same second (journal: `Stopping kodi.service` then `Stopped kodi.service` at 23:23:35). This is the test session Laith or the earlier job started, not a regression from the build. Kodi will not come back until `lumen-test` is stopped, which this job was not allowed to do. Reading state only, nothing was changed.
-
-**Notes for the main conversation:**
-- The Pi test count is 288 (last known 234), Mac is 280 (last known 226). Both are higher because the M5 tests were added.
-- The `sh session/install.sh` dry run printed a temp path for the unit (`/tmp/tmp.*`), but that file did not exist afterwards, so nothing was left behind.
-- Before the TV session, Laith must stop `lumen-test.service` (or let Kodi return) and then recheck Kodi is active. Step 6 should be rerun then.
+M5 contracts (as built): mode precedence settings.toml `mode` > `LUMEN_MODE` > 1920x1080@60; store precedence settings.toml `store_url` > `LUMEN_STORE_URL` > default (`~/.config/lumen-tv/settings.toml`, written atomically by the Resolution toggle). `platform/output.rs` polls wlr-randr every 2 s and re-applies the saved mode (3 tries, then gives up until the output reappears or the target changes). `lumen.service`: `Restart=always`, `StartLimitBurst=3` in 60 s, then `OnFailure=kodi.service`. Build-round review/test reports: docs/ARCHIVE.md.
 
 ## Known issues
 - After `systemctl stop lumen-test`, its ExecStopPost starts Kodi: wait until kodi is active before starting a test unit again.
@@ -164,21 +138,20 @@ Decisions so far:
 - Steam Link needs Xwayland, and labwc must be restarted after installing it (restart `lumen-test`).
 - Flatpak apps: the launched process is a wrapper, so descendants (`bwrap`/app) may outlive close; set `process` and check the terminate path before shipping one.
 
-- Output mode resets to 4K after the TV power-cycles: labwc drops and re-adds HDMI-A-1 at its preferred 3840x2160, and only `start-lumen.sh` applies `LUMEN_MODE` (1080p60 default), once at start. Found at the M3.5 TV check (2026-10-19). Lumen holds 60 fps at 4K, so this is a perf/consistency issue, not a breakage. Fix candidate: re-apply the mode when the output reappears.
+- Output mode reset to 4K after a TV power-cycle (M3.5): M5 fix built (output watcher re-applies the saved mode); confirm at T4.
 
 - DualSense reconnect: once at the M4.5 TV test, the first PS press after turning the pad off never reached the Pi (no BlueZ log); the next presses reconnected in 5-6 s. Watch it; an M5 option is asking BlueZ to connect known pads.
-
-- Stick rebound (Laith, 2026-10-20): flicking the left stick right/left on Home moves focus, then the stick's spring-back overshoots past centre and fires the opposite direction, so focus snaps back. Not fixed; scheduled for M5 input polish (opposite-direction lockout ~150 ms after release, or hysteresis on release).
 
 ## Blockers
 - (none)
 - Bench is thermally sensitive: the Pi has no fan; after long builds it throttles at 75-82 C and 4K drops to 45-55 fps (a cool 4K run passed at 60). Let it cool before benching.
 
 ## Next Steps
-0. **M5:** run AGENT_JOBS.md Phases 1-4, then the T0-T14 TV checklist with Laith (boot switch only with his OK; `install.sh --apply --revert` undoes it). Delete AGENT_JOBS.md after execution.
+0. **M5:** finish the TV checklist above (re-test T3 first). Turn T14 notes into a builder job, fix, then close M5 (MILESTONES result line, notes to ARCHIVE, Recently Completed). Open questions for Laith: record the M5-before-root-helper order in MILESTONES.md; does the DualSense count for BRIEF §11's controller?
 1. **Root install helper (PIN) milestone (after M5):** project-director writes its MILESTONES entry + Gate from the 2026-10-19 scope change (root daemon, on-screen PIN pad, argon2 + rate limit, root-owned allowlist on the Pi), then orchestrator plans it.
 2. Confirm the proposed M5.5 and M6 Gate lines with Laith before either starts (M6 is settled as Pi 5 only, `.deb` only).
 3. Untested: a game in Steam Link with the pad on BT; uninstalling a keep-alive app while it runs (M4's 8 s wait). Check both once.
+4. Small: 2 clippy warnings in M5 files (`src/input/mapping.rs:296` needless closure, `src/store.rs:463` is_multiple_of).
 
 ## Recently Completed
 - M4.5 Controllers + Bluetooth (2026-10-20): gate passed at the TV (pair from the panel with the remote, pad drives Lumen/Jellyfin/Steam Link, forget, 0 drift events; G4 first reconnect flaky once). Fixed on the way: per-property BlueZ snapshot, default pairing agent (bonding), controller keys for web apps. Result line in MILESTONES.md, execution notes in docs/ARCHIVE.md.

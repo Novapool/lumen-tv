@@ -100,6 +100,9 @@ struct Sources {
     /// The last settings.toml parse error logged, so a broken file logs once
     /// rather than on every 1 s refresh.
     logged_settings_err: RefCell<Option<String>>,
+    /// The output mode the watcher last reported, so the Display panel re-reads
+    /// wlr-randr when the mode changes (a switch, or the TV coming back).
+    seen_output: RefCell<Option<String>>,
 }
 
 impl Sources {
@@ -123,6 +126,10 @@ impl Sources {
         }
         let (mode, mode_origin) = settings::resolve_mode(&loaded, std::env::var("LUMEN_MODE").ok().as_deref());
         let status = platform::output::status();
+        if *self.seen_output.borrow() != status.current {
+            *self.seen_output.borrow_mut() = status.current.clone();
+            diag::refresh_randr(&self.randr);
+        }
         let (detail, level) = diag::resolution_detail(&status);
         ui.set_resolution_detail(detail.into());
         ui.set_resolution_level(level);
@@ -397,7 +404,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let bench = bench::Bench::attach(&ui);
     wire_settings(
         &ui,
-        Sources { bench: bench.clone(), status: input_status, debug: input_debug, randr: Default::default(), logged_settings_err: RefCell::new(None) },
+        Sources { bench: bench.clone(), status: input_status, debug: input_debug, randr: Default::default(), logged_settings_err: RefCell::new(None), seen_output: RefCell::new(None) },
     );
     storefeed::wire(&ui);
     btfeed::wire(&ui);
