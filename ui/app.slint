@@ -9,6 +9,7 @@ import { DiagPanel, DiagRow, SettingsScreen } from "settings.slint";
 import { BluetoothPanel, BtDevice, BtState, BtText } from "bluetooth.slint";
 import { StoreItem, StoreJob, StoreScreen } from "store.slint";
 import { DetailsScreen } from "details.slint";
+import { PowerScreen, PowerText } from "power.slint";
 
 export { BtDevice, BtState, DiagPanel, DiagRow, StoreItem, StoreJob }
 
@@ -87,12 +88,22 @@ export component AppWindow inherits Window {
     property <StoreItem> st-item;
     property <int> st-scroll: 0; // Details/Confirm scroll steps
 
+    // Power contract (src/power.rs). pw-confirm: the confirm step for pw-row.
+    in-out property <bool> power-open: false;
+    in property <string> power-message: ""; // set by Rust once an action starts or fails
+    in property <int> power-message-level: 0;
+    callback power-action(string); // PowerText.action(row), only from the confirm step
+    callback power-changed(bool);
+    property <int> pw-row: 0;
+    property <bool> pw-confirm: false;
+    property <int> pw-btn: 0;
+
     property <length> rem: self.width / 120;
     property <length> safe-x: 6 * root.rem;
     property <length> safe-y: 3.4 * root.rem;
     property <int> visible-tiles: 5;
 
-    // The apps row: registry entries, then Store and Settings. Built in
+    // The apps row: registry entries, then Store, Settings and Power. Built in
     // main.rs, which also bakes each `hero` at startup.
     in-out property <[App]> apps: [];
 
@@ -323,6 +334,42 @@ export component AppWindow inherits Window {
         }
     }
 
+    function close-power() {
+        root.power-open = false;
+        root.power-changed(false);
+    }
+
+    function power-nav(e: NavEvent) {
+        if (e == NavEvent.home) {
+            root.close-power();
+        } else if (!root.pw-confirm) {
+            if (e == NavEvent.back) {
+                root.close-power();
+            } else if (e == NavEvent.up) {
+                root.pw-row = max(0, root.pw-row - 1);
+            } else if (e == NavEvent.down) {
+                root.pw-row = min(2, root.pw-row + 1);
+            } else if (e == NavEvent.select || e == NavEvent.right) {
+                root.pw-confirm = true;
+                root.pw-btn = 0; // Cancel first
+            }
+        } else {
+            // [Cancel, action]
+            if (e == NavEvent.back) {
+                root.pw-confirm = false;
+            } else if (e == NavEvent.left) {
+                root.pw-btn = 0;
+            } else if (e == NavEvent.right) {
+                root.pw-btn = 1;
+            } else if (e == NavEvent.select) {
+                if (root.pw-btn == 1) {
+                    root.power-action(PowerText.action(root.pw-row));
+                }
+                root.pw-confirm = false;
+            }
+        }
+    }
+
     // Rows in a panel; Bluetooth (index panels.length) and Toggles (index
     // panels.length + 1, always last) are built by the UI. Bluetooth is a
     // placeholder: one scan row plus the devices.
@@ -380,6 +427,9 @@ export component AppWindow inherits Window {
             }
             return "settings panel=\{root.s-panel == root.diag-panels.length ? "Bluetooth" : root.s-panel > root.diag-panels.length ? "Toggles" : root.diag-panels[root.s-panel].title} level=\{root.s-level} row=\{root.s-row} \"\{root.s-level == 0 ? "" : root.s-panel == root.diag-panels.length ? (root.s-row == 0 ? BtText.scan-label(root.bt-state) : root.bt-devices[root.s-row - 1].name) : root.s-panel > root.diag-panels.length ? (root.s-row == 0 ? "Resolution" : root.s-row == 1 ? "Input debug" : "Run benchmark") : root.diag-panels[root.s-panel].rows[root.s-row].text}\"";
         }
+        if (root.power-open) {
+            return "power row=\{PowerText.action(root.pw-row)} confirm=\{root.pw-confirm ? "yes" : "no"} btn=\{root.pw-btn}";
+        }
         if (root.store-open) {
             return "store level=\{root.st-level} row=\{root.st-row}";
         }
@@ -403,6 +453,13 @@ export component AppWindow inherits Window {
             root.store-nav(e);
             return;
         }
+        if (root.power-open) {
+            // An action is under way (or failed): only Home/Back leave.
+            if (root.power-message == "" || e == NavEvent.home || e == NavEvent.back) {
+                root.power-nav(root.power-message == "" ? e : NavEvent.home);
+            }
+            return;
+        }
         if (e == NavEvent.right) {
             root.move(1);
         } else if (e == NavEvent.left) {
@@ -424,6 +481,12 @@ export component AppWindow inherits Window {
                 root.st-btn = 0;
                 root.store-open = true;
                 root.store-changed(true);
+            } else if (root.apps[root.focused].id == "lumen:power") {
+                root.pw-row = 0;
+                root.pw-confirm = false;
+                root.pw-btn = 0;
+                root.power-open = true;
+                root.power-changed(true);
             } else {
                 root.launch(root.focused);
             }
@@ -479,7 +542,7 @@ export component AppWindow inherits Window {
     // and fades are baked into one opaque image (src/bake.rs), so at rest this
     // is a single layer: the GPU is fill-rate bound at 4K.
     Rectangle {
-        visible: !root.settings-open && !root.store-open;
+        visible: !root.settings-open && !root.store-open && !root.power-open;
         x: 0;
         y: 0;
         width: root.width;
@@ -494,7 +557,7 @@ export component AppWindow inherits Window {
     }
 
     Text {
-        visible: !root.settings-open && !root.store-open;
+        visible: !root.settings-open && !root.store-open && !root.power-open;
         x: root.safe-x;
         y: root.safe-y;
         text: "Lumen";
@@ -504,7 +567,7 @@ export component AppWindow inherits Window {
     }
 
     Text {
-        visible: !root.settings-open && !root.store-open;
+        visible: !root.settings-open && !root.store-open && !root.power-open;
         x: root.width - root.safe-x - self.width;
         y: root.safe-y;
         text: root.clock;
@@ -514,7 +577,7 @@ export component AppWindow inherits Window {
     }
 
     if root.perf-text != "": VerticalLayout {
-        visible: !root.settings-open && !root.store-open;
+        visible: !root.settings-open && !root.store-open && !root.power-open;
         x: root.width - root.safe-x - self.width;
         y: root.safe-y + 3.5 * root.rem;
         spacing: 0.3 * root.rem;
@@ -536,7 +599,7 @@ export component AppWindow inherits Window {
     }
 
     Text {
-        visible: !root.settings-open && !root.store-open;
+        visible: !root.settings-open && !root.store-open && !root.power-open;
         x: root.safe-x;
         y: 14 * root.rem;
         text: root.apps[root.focused].name;
@@ -548,7 +611,7 @@ export component AppWindow inherits Window {
 
     // tile row, 22rem pitch
     Rectangle {
-        visible: !root.settings-open && !root.store-open;
+        visible: !root.settings-open && !root.store-open && !root.power-open;
         x: root.safe-x - root.row-offset;
         y: 35 * root.rem;
         width: root.apps.length * 22 * root.rem;
@@ -611,6 +674,19 @@ export component AppWindow inherits Window {
         sel-btn: root.st-btn;
         confirm: root.st-level == 2;
         scroll <=> root.st-scroll;
+    }
+
+    if root.power-open: PowerScreen {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        rem: root.rem;
+        sel-row: root.pw-row;
+        confirm: root.pw-confirm;
+        sel-btn: root.pw-btn;
+        message: root.power-message;
+        message-level: root.power-message-level;
     }
 
     if root.input-debug != "": Rectangle {

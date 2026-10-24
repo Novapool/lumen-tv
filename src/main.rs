@@ -23,6 +23,7 @@ mod icons;
 mod input;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod platform;
+mod power;
 #[cfg(target_os = "linux")]
 mod session;
 mod settings;
@@ -408,6 +409,7 @@ fn main() -> Result<(), slint::PlatformError> {
     );
     storefeed::wire(&ui);
     btfeed::wire(&ui);
+    power::wire(&ui);
     let weak = ui.as_weak();
     let b = bench.clone();
     ui.on_bench(move || {

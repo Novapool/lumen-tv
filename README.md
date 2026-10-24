@@ -32,6 +32,10 @@ The script never starts or stops a unit and never edits Kodi's files. It is safe
 
 `lumen.service` runs `labwc` with `session/start-lumen.sh` on tty1, `Restart=always`: any exit restarts the session (a clean exit would otherwise leave the TV black). An explicit `systemctl stop`, or a conflicting unit starting (`steamlink`, `uxplay`, `kodi`, `lumen-test`), is not restarted. `StartLimitBurst=3` in 60 s: the 3rd exit within 60 s makes the unit fail and `OnFailure=kodi.service` hands the TV to Kodi (rescue). After a rescue, a plain `systemctl start lumen.service` is refused for a while (start limit); bring Lumen back with `sudo systemctl reset-failed lumen.service && sudo systemctl start lumen.service`. `start-lumen.sh` waits for the HDMI output, sets the mode, then `exec`s the binary.
 
+### Power
+
+The last tile on Home opens Power: Restart Lumen, Reboot, Shut down, each behind a confirm step (Cancel is focused; Back cancels). Restart Lumen exits, and `Restart=always` brings the session back (under `lumen-test.service` Kodi comes back instead). Reboot and Shut down run `systemctl reboot`/`poweroff`: polkit lets the active local session on tty1 do that without a password, so no sudoers entry is needed. Three Restart Lumen presses within 60 s hit the start limit and hand the TV to Kodi.
+
 ## Building
 
 On the Pi: `cargo build --release` in this folder (binary: `target/release/lumen-tv`, which is what `start-lumen.sh` runs).

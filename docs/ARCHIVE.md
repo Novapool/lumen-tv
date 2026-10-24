@@ -166,3 +166,33 @@ Built 2026-10-21 by builder jobs 1.1-2.1 (stick rebound lockout, settings.toml +
 - The Pi test count is 288 (last known 234), Mac is 280 (last known 226). Both are higher because the M5 tests were added.
 - The `sh session/install.sh` dry run printed a temp path for the unit (`/tmp/tmp.*`), but that file did not exist afterwards, so nothing was left behind.
 - Before the TV session, Laith must stop `lumen-test.service` (or let Kodi return) and then recheck Kodi is active. Step 6 should be rerun then.
+
+## M5 TV checklist (rotated from IN-PROGRESS.md, 2026-10-24; Laith: all checks pass)
+**M5 TV checklist** (Laith at the TV; mark each one as it's done). Parts A-B change nothing permanent. Part C switches the boot default (undo: `sudo sh ~/lumen-tv/session/install.sh --apply --revert && sudo reboot`).
+
+Part A (only while Kodi is the boot default; now that `lumen.service` is the boot session, restart Lumen from Power → Restart Lumen instead). Start the newest build (from the Mac; sudoers allows these without a password):
+```sh
+ssh pitv 'sudo systemctl stop lumen-test.service'
+ssh pitv 'systemctl is-active kodi.service'     # repeat until "active"
+ssh pitv 'sudo systemctl start --no-block lumen-test.service'
+```
+Part B, with lumen-test:
+- [x] T1 Stick rebound (2026-10-22 pass): 10 flicks each way move one tile, no snap-back; quick right-then-left and a held reversal work; d-pad unchanged. Optional: `cd ~/lumen-tv && ./target/release/examples/fake-pad flick` with Input debug on.
+- [x] T2 Resting stick, 60 s, no events (2026-10-22 pass).
+- [ ] T3 Settings → Toggles → Resolution to 4K60 and back. 2026-10-22: the switch worked (wlr-randr showed 3840x2160 current, log `[display] re-applied 3840x2160@60`) but the Display panel kept showing 1080p: it read wlr-randr only when Settings opened. Fixed (main.rs `Sources::seen_output`: re-read wlr-randr when the watcher's current mode changes); built on the Pi, **re-test**: within ~2-3 s of a switch the Display panel shows the new mode, Resolution row "active", tiles sharp.
+- [ ] T4 Survives a TV power-cycle: with 1080p60 saved, TV off/on → Display shows 1920x1080 again within ~5 s. Repeat with 4K60 saved.
+- [ ] T5 Survives a Lumen restart (Part A stop/start): comes back in the saved mode.
+- [ ] T6 Mappings readable from the couch; About shows version/commit/manifest URL. Break the file: `ssh pitv 'echo bogus >> ~/.config/lumen-tv/settings.toml'` → About shows an error row, Log logs it once, the Resolution row says "not saved: …" on a switch. Restore: `ssh pitv 'sed -i "/^bogus$/d" ~/.config/lumen-tv/settings.toml'`.
+- [ ] T7 Bench (Pi cooled): Settings → Toggles → Run benchmark at 1080p and 4K, Settings open and at Home: ≥ 59 fps, < 2% slow.
+
+Part C, boot switch (Laith's sudo, on the Pi):
+- [x] T8 (2026-10-24, run by Claude with Laith's cached sudo) `sh ~/lumen-tv/session/install.sh` (dry run, read it), then `sudo sh ~/lumen-tv/session/install.sh --apply` (boot default unchanged).
+- [x] T9 (2026-10-24) `sudo sh ~/lumen-tv/session/install.sh --apply --quiet-boot --set-default`, then reboot: came up on `lumen.service`, Kodi inactive, tiles end with Power. Backup: `/boot/firmware/cmdline.txt.lumen-backup`.
+- [ ] T10 **Gate part 1:** unplug/replug 3×: lands on Lumen with no console text or desktop after the splash. Note pointer, background flash, text.
+- [ ] T11 Rescue: `ssh pitv 'pkill -SEGV -x lumen-tv'` 3× (wait for Lumen to come back between) → Kodi comes up. Then `sudo systemctl reset-failed lumen.service && sudo systemctl start lumen.service`.
+- [ ] T12 **Gate part 2 (BRIEF §11):** (a) power-on lands on Lumen; (b) remote + DualSense navigate Home, Store, Settings, every panel (Laith to confirm the DualSense counts for BRIEF's "Xbox controller"); (c) red/PS returns to Lumen from Jellyfin and Steam Link; (d) Jellyfin resumes (same PID), Steam Link closes others on launch and itself on Home; (e) a Store install (KolourPaint) appears on Home without a restart, then uninstall; (f) animations smooth; (g) README covers setup, adding an app, a controller mapping, another manifest.
+- [ ] T13 DualSense first reconnect after power-off: does the first PS press register? (M4.5 G4 flake.)
+- [ ] T15 Power tile (last on Home): Restart Lumen → back to Home; Reboot → lands on Lumen; Shut down → Pi off; Back on the confirm step cancels.
+- [ ] T14 Visual polish walk-through: note overscan margins, text sizes, focus visuals, transitions, Store/Details/Bluetooth layouts → becomes a follow-up builder job before M5 closes.
+
+M5 contracts (as built): mode precedence settings.toml `mode` > `LUMEN_MODE` > 1920x1080@60; store precedence settings.toml `store_url` > `LUMEN_STORE_URL` > default (`~/.config/lumen-tv/settings.toml`, written atomically by the Resolution toggle). `platform/output.rs` polls wlr-randr every 2 s and re-applies the saved mode (3 tries, then gives up until the output reappears or the target changes). `lumen.service`: `Restart=always`, `StartLimitBurst=3` in 60 s, then `OnFailure=kodi.service`. Build-round review/test reports: docs/ARCHIVE.md.

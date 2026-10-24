@@ -54,13 +54,14 @@ fn tile_tint(colors: Option<&[String]>) -> bake::Tint {
 }
 
 /// The built-in tiles after the registry's: id, name, glyph, gradient.
-const BUILT_IN: [(&str, &str, &str, &str, &str); 2] = [
+const BUILT_IN: [(&str, &str, &str, &str, &str); 3] = [
     ("lumen:store", "Store", "+", "#003b3b", "#19c3b0"),
     ("lumen:settings", "Settings", "⚙", "#24262c", "#6b707c"),
+    ("lumen:power", "Power", "⏻", "#3a0d12", "#8a2a33"),
 ];
 
-/// Decodes the icons and builds the model rows (registry entries, then Store
-/// and Settings) with their heroes, and faces too when `rem` is known.
+/// Decodes the icons and builds the model rows (registry entries, then Store,
+/// Settings and Power) with their heroes, and faces too when `rem` is known.
 fn build_rows(loaded: &registry::Loaded, rem: f32, running: &dyn Fn(&str) -> bool) -> (Vec<App>, Home) {
     let (config, roots) = (registry::config_dir(), icons::Roots::system());
     let mut apps = Vec::new();

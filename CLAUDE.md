@@ -10,7 +10,7 @@ Lumen: an Apple TV-style launcher for pitv (Rust + Slint UI, evdev input, labwc 
 - `docs/ARCHIVE.md`: old milestone execution notes. Read on demand only.
 
 ## Layout
-- `src/`: Rust (main + Slint callbacks, input, registry, apps, icons, bake, `diag.rs`/`logtail.rs` = Settings panel data + log capture, `reclaim.rs` = CEC remote re-claim, `home.rs` = Home tiles + live reload, `store.rs`/`storefeed.rs` = Store core + Slint wiring, `bluetooth.rs`/`btfeed.rs` = Bluetooth panel core + Slint wiring, `input/keys_out.rs` = controller → keys for web apps, `session.rs` = glue between registry, lifecycle, windows and the Home gate, `settings.rs` = settings.toml (mode, store_url), `platform/` incl. `output.rs` = HDMI mode watcher). `ui/`: `.slint` files (`settings.slint` = Settings, `store.slint`/`details.slint` = Store, `bluetooth.slint` = Bluetooth panel), compiled by `build.rs`.
+- `src/`: Rust (main + Slint callbacks, input, registry, apps, icons, bake, `diag.rs`/`logtail.rs` = Settings panel data + log capture, `reclaim.rs` = CEC remote re-claim, `home.rs` = Home tiles + live reload, `store.rs`/`storefeed.rs` = Store core + Slint wiring, `bluetooth.rs`/`btfeed.rs` = Bluetooth panel core + Slint wiring, `input/keys_out.rs` = controller → keys for web apps, `session.rs` = glue between registry, lifecycle, windows and the Home gate, `settings.rs` = settings.toml (mode, store_url), `power.rs` = Power tile actions, `platform/` incl. `output.rs` = HDMI mode watcher). `ui/`: `.slint` files (`settings.slint` = Settings, `store.slint`/`details.slint` = Store, `bluetooth.slint` = Bluetooth panel, `power.slint` = Power screen), compiled by `build.rs`.
 - `config/input/`: shipped input mapping files (built into the binary). `config/apps/`: default app registry TOMLs (built in; seeded to `~/.config/lumen-tv/apps/`).
 - `examples/`: `fake-pad.rs` (virtual controller; `dualsense` mode), `press.rs` (taps keys via uinput) and `toplevels.rs` (lists labwc toplevels): the M3 gate instruments.
 - `store/manifest.json`: the Store's app list, served from GitHub raw.
@@ -18,7 +18,7 @@ Lumen: an Apple TV-style launcher for pitv (Rust + Slint UI, evdev input, labwc 
 
 ## Rules
 - Build milestone by milestone and stop after each one for Laith to test on the TV.
-- Kodi stays the boot default until M5 passes. Test Lumen through a unit that `Conflicts=kodi.service`.
+- Lumen is pitv's boot session since M5 (2026-10-24): `lumen.service` enabled, `kodi.service` disabled. Kodi is the rescue (3 crashes in 60 s) and a tile. Back to Kodi: `sudo sh ~/lumen-tv/session/install.sh --apply --revert && sudo reboot`.
 - All Pi-specific code lives behind traits in `src/platform/`.
 - Output defaults to 1080p60; 4K60 also works (`LUMEN_MODE=3840x2160@60` in `~/.config/lumen-tv/env`). Use the femtovg renderer. Follow the Slint rules in IN-PROGRESS.md (bake gradients/shadows into images, no animated shadow size/blur).
 - Never run store install commands without showing them first.
