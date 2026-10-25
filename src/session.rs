@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use slint::{ComponentHandle, Model, Weak};
 
 use crate::apps::{self, Lifecycle, Spec, Step, WindowInfo, LUMEN_APP_ID};
-use crate::platform::{toplevel, Toplevel, WindowEvent, Windows};
+use crate::platform::{toplevel, KeyOverride, Toplevel, WindowEvent, Windows};
 use crate::reclaim::Reclaim;
 use crate::registry::Entry;
 use crate::AppWindow;
@@ -42,6 +42,9 @@ struct Ctx {
     fullscreen_timer: slint::Timer,
     /// Debounce for re-claiming the TV remote after an app exits.
     reclaim: Reclaim,
+    /// The remote-keymap overrides last handed to the platform (so only a
+    /// change triggers a write).
+    applied_keys: Vec<KeyOverride>,
 }
 
 thread_local! {
@@ -71,6 +74,7 @@ pub fn start(ui: &AppWindow, entries: Vec<Entry>) -> Arc<AtomicBool> {
             seen: HashMap::new(),
             fullscreen_timer: slint::Timer::default(),
             reclaim: Reclaim::default(),
+            applied_keys: Vec::new(),
         })
     });
 
@@ -181,6 +185,23 @@ fn claim_remote_async(why: &'static str) {
             with_ctx(|c| c.reclaim.finished());
             try_reclaim(); // a claim that came due meanwhile
         });
+    });
+}
+
+/// Hands the new remote key overrides to the platform and writes the keymap on
+/// a worker thread (ioctls). Recording happens here, on the UI thread, in
+/// foreground order; every writer (this and the claim's remap) applies the
+/// newest record when it gets the write lock, so an older thread running late
+/// or a re-claim after an app exit can't leave a stale keymap: the last
+/// foreground wins.
+fn apply_keys_async(label: &str, keys: &[KeyOverride]) {
+    use crate::platform::Tv;
+    let tv = crate::platform::pi::PiTv::default();
+    tv.set_key_overrides(label, keys);
+    std::thread::spawn(move || {
+        if let Err(e) = tv.apply_keymap() {
+            eprintln!("[tv] keys: keymap write failed: {e}");
+        }
     });
 }
 
@@ -360,18 +381,22 @@ fn spawn(id: &str) {
 /// Mirrors the lifecycle into the tiles' `running` flag and the poller's targets.
 fn sync_tiles() {
     with_ctx(|c| {
-        crate::input::set_foreground(match c.lc.foreground() {
-            apps::Foreground::App(id) => Some(id.clone()),
-            apps::Foreground::Lumen => None,
-        });
-        let web = match c.lc.foreground() {
-            apps::Foreground::App(id) => c
-                .entries
-                .iter()
-                .any(|e| e.id == *id && e.kind == crate::registry::Kind::Url),
-            apps::Foreground::Lumen => false,
+        let (fg, web, keys) = match c.lc.foreground() {
+            apps::Foreground::App(id) => {
+                let e = c.entries.iter().find(|e| e.id == *id);
+                let web = e.is_some_and(|e| e.kind == crate::registry::Kind::Url);
+                let keys = crate::input::keys_out::resolve_overrides(e.and_then(|e| e.keys.as_ref()));
+                (Some(id.clone()), web, keys)
+            }
+            apps::Foreground::Lumen => (None, false, Vec::new()),
         };
+        crate::input::set_foreground(fg.clone());
         crate::input::set_foreground_web(web);
+        crate::input::set_key_overrides(keys.clone());
+        if keys != c.applied_keys {
+            c.applied_keys = keys.clone();
+            apply_keys_async(fg.as_deref().unwrap_or("lumen"), &keys);
+        }
         if let Ok(mut t) = c.targets.lock() {
             *t = c.lc.poll_targets();
         }

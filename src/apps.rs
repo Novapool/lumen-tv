@@ -564,13 +564,42 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-// Registry ids are [A-Za-z0-9_-], so `{id}` needs no quoting.
-fn browser_line(browser_cmd: &str, id: &str, url: &str) -> String {
-    let cmd = browser_cmd.replace("{id}", id);
+/// Quotes one browser argument. A value that is `~` or starts with `~/`
+/// (after the first `=`) gets a `"$HOME"` the shell expands; the rest stays in
+/// single quotes, so nothing else in the value can be interpreted.
+fn quote_browser_arg(arg: &str) -> String {
+    if let Some((head, value)) = arg.split_once('=') {
+        if let Some(rest) = value.strip_prefix('~').filter(|r| r.is_empty() || r.starts_with('/')) {
+            return format!("{}\"$HOME\"{}", shell_quote(&format!("{head}=")), shell_quote(rest));
+        }
+    }
+    shell_quote(arg)
+}
+
+/// The extra Chromium arguments of an entry: `--user-agent=` first, then
+/// `browser_args`. (Chromium honours only the last `--disable-features=` /
+/// `--enable-features=` flag, so an entry should hold at most one of each.)
+fn browser_extras(entry: &Entry) -> String {
+    let ua = entry.user_agent.iter().map(|ua| shell_quote(&format!("--user-agent={ua}")));
+    let args = entry.browser_args.iter().flatten().map(|a| quote_browser_arg(a));
+    ua.chain(args).collect::<Vec<_>>().join(" ")
+}
+
+// Registry ids are [A-Za-z0-9_-], so `{id}` needs no quoting. `extra` goes at
+// `{args}`, else just before the URL; with no extras the line is unchanged.
+fn browser_line(browser_cmd: &str, entry: &Entry, url: &str) -> String {
+    let mut cmd = browser_cmd.replace("{id}", &entry.id);
+    let mut extra = browser_extras(entry);
+    if cmd.contains("{args}") {
+        cmd = cmd.replace("{args}", &extra);
+        extra.clear();
+    } else if !extra.is_empty() {
+        extra.push(' ');
+    }
     if cmd.contains("{url}") {
-        cmd.replace("{url}", &shell_quote(url))
+        cmd.replace("{url}", &format!("{extra}{}", shell_quote(url)))
     } else {
-        format!("{cmd} {}", shell_quote(url))
+        format!("{cmd} {extra}{}", shell_quote(url))
     }
 }
 
@@ -600,7 +629,7 @@ pub fn command_line(
     match entry.kind {
         Kind::Url => {
             let url = entry.url.as_deref().ok_or("no url")?;
-            Ok(browser_line(browser_cmd, &entry.id, url))
+            Ok(browser_line(browser_cmd, entry, url))
         }
         Kind::Command => {
             let launch = entry.launch.as_deref().ok_or("no launch line")?.trim();
@@ -612,7 +641,7 @@ pub fn command_line(
                 return Ok(launch.to_string());
             }
             match &entry.fallback_url {
-                Some(url) => Ok(browser_line(browser_cmd, &entry.id, url)),
+                Some(url) => Ok(browser_line(browser_cmd, entry, url)),
                 None => Err(format!("{program}: not found on PATH")),
             }
         }
@@ -1692,6 +1721,66 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
             command_line(&url, "br --class=lumen-{id} {url}", &|_| false).unwrap(),
             "br --class=lumen-a 'http://x/web'"
         );
+    }
+
+    #[test]
+    fn browser_line_extras_are_quoted_and_placed() {
+        let yt = entry(
+            "id=\"a\"\nname=\"A\"\ntype=\"url\"\nurl=\"http://x/web\"\n\
+             user_agent=\"Mozilla (X11; it's) Large Screen\"\n\
+             browser_args=[\"--autoplay-policy=no-user-gesture-required\", \"--load-extension=~/lumen-tv/ext\"]\n",
+        );
+        let ua = "'--user-agent=Mozilla (X11; it'\\''s) Large Screen'";
+        let ext = "'--load-extension='\"$HOME\"'/lumen-tv/ext'";
+        let extras = format!("{ua} '--autoplay-policy=no-user-gesture-required' {ext}");
+        // before {url}
+        assert_eq!(
+            command_line(&yt, "br --class=lumen-{id} {url}", &|_| false).unwrap(),
+            format!("br --class=lumen-a {extras} 'http://x/web'")
+        );
+        // template without {url}: extras then the appended URL
+        assert_eq!(
+            command_line(&yt, "br", &|_| false).unwrap(),
+            format!("br {extras} 'http://x/web'")
+        );
+        // {args} placeholder wins; the URL stays where it is
+        assert_eq!(
+            command_line(&yt, "br {args} --kiosk {url}", &|_| false).unwrap(),
+            format!("br {extras} --kiosk 'http://x/web'")
+        );
+        assert_eq!(
+            command_line(&yt, "br {args}", &|_| false).unwrap(),
+            format!("br {extras} 'http://x/web'")
+        );
+    }
+
+    #[test]
+    fn browser_line_without_extras_is_unchanged() {
+        let url = entry("id=\"a\"\nname=\"A\"\ntype=\"url\"\nurl=\"http://x/web\"\n");
+        assert_eq!(
+            command_line(&url, DEFAULT_BROWSER, &|_| false).unwrap(),
+            DEFAULT_BROWSER.replace("{id}", "a").replace("{url}", "'http://x/web'")
+        );
+        // an {args} placeholder with nothing to put there just leaves a gap
+        assert_eq!(command_line(&url, "br {args} {url}", &|_| false).unwrap(), "br  'http://x/web'");
+    }
+
+    #[test]
+    fn browser_extras_apply_to_a_command_fallback_only() {
+        let e = entry(
+            "id=\"a\"\nname=\"A\"\nlaunch=\"foo\"\nfallback_url=\"http://h\"\nbrowser_args=[\"--x\"]\n",
+        );
+        assert_eq!(command_line(&e, "br {url}", &|p| p == "foo").unwrap(), "foo");
+        assert_eq!(command_line(&e, "br {url}", &|_| false).unwrap(), "br '--x' 'http://h'");
+    }
+
+    #[test]
+    fn browser_arg_quoting_cannot_be_escaped() {
+        assert_eq!(quote_browser_arg("--a=b c"), "'--a=b c'");
+        assert_eq!(quote_browser_arg("--a=$(rm -rf ~)"), "'--a=$(rm -rf ~)'");
+        assert_eq!(quote_browser_arg("--a=~/x'y"), "'--a='\"$HOME\"'/x'\\''y'");
+        assert_eq!(quote_browser_arg("--a=~"), "'--a='\"$HOME\"''");
+        assert_eq!(quote_browser_arg("--a=x~/y"), "'--a=x~/y'");
     }
 
     #[test]

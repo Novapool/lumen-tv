@@ -18,7 +18,7 @@ sudo sh session/install.sh --apply --quiet-boot        # also quiet the boot tex
 sudo sh session/install.sh --apply --revert            # boot into Kodi again
 ```
 
-`--apply` installs the apt packages (labwc, wlr-randr, xwayland, chromium, flatpak, v4l-utils, bluez, PipeWire, build tools and dev libraries), adds your user to `input video render audio`, adds a `/dev/uinput` udev rule only if the node isn't already group-writable by `input`, installs `/etc/systemd/system/lumen.service` (user and home substituted), and installs `/etc/sudoers.d/lumen` if missing (an existing `/etc/sudoers.d/lumen` is never updated by `install.sh`; copy `session/sudoers-lumen` over it yourself if it changed). Rust is not installed for you: use [rustup](https://rustup.rs).
+`--apply` installs the apt packages (labwc, wlr-randr, xwayland, chromium, flatpak, v4l-utils, bluez, PipeWire, uxplay, avahi-daemon, GStreamer bad/libav plugins, python3-gi + GTK 3 (AirPlay tile), build tools and dev libraries), adds your user to `input video render audio`, adds a `/dev/uinput` udev rule only if the node isn't already group-writable by `input`, installs `/etc/systemd/system/lumen.service` (user and home substituted), and installs `/etc/sudoers.d/lumen` if missing (an existing `/etc/sudoers.d/lumen` is never updated by `install.sh`; copy `session/sudoers-lumen` over it yourself if it changed). Rust is not installed for you: use [rustup](https://rustup.rs).
 
 Flags:
 - `--set-default`: disables `kodi.service`, enables `lumen.service`. Takes effect at the next reboot.
@@ -53,7 +53,7 @@ sudo systemctl stop lumen-test.service               # back to Kodi
 
 ## Adding an app by hand
 
-One TOML file per app in `~/.config/lumen-tv/apps/`. The three built-in apps (Jellyfin, Steam Link, Kodi) are written there on first start only; edit them freely. A broken file is skipped and listed under Settings, never fatal. Apps load at start and after a Store install or uninstall; restart Lumen after hand edits. Unknown keys are an error.
+One TOML file per app in `~/.config/lumen-tv/apps/`. The built-in apps (Jellyfin, YouTube, AirPlay, Steam Link, Kodi) are written there when missing, and each is offered once: `~/.config/lumen-tv/apps/.shipped` lists the ids already offered, so an app you delete or uninstall stays gone, and an existing file is never overwritten. A Lumen update that adds a new built-in app writes just that one. Edit them freely. A broken file is skipped and listed under Settings, never fatal. Apps load at start and after a Store install or uninstall; restart Lumen after hand edits. Unknown keys are an error.
 
 | Field | Meaning |
 |---|---|
@@ -71,22 +71,13 @@ One TOML file per app in `~/.config/lumen-tv/apps/`. The three built-in apps (Je
 | `glyph` | 1-2 characters shown when there is no icon. |
 | `colors` | 2-3 `"#rrggbb"` stops for the tile gradient. |
 | `order` | Sort position (lower first). |
+| `user_agent` | `url` apps (or a `command` with `fallback_url`). Sent as `--user-agent=<value>`; one line, not empty. |
+| `browser_args` | Same apps. Extra Chromium arguments, each starting with `--`. A `~/` right after the first `=` expands to `$HOME`. Keep at most one `--enable-features=` and one `--disable-features=` (Chromium honours only the last). |
+| `keys` | A `[keys]` table, e.g. `Back = "KEY_ESC"`: while this app is in front, the TV remote's matching button sends that key instead of the default (any app), and so does the pad's (web apps only). Actions: `Up Down Left Right Select Back PlayPause`; keys are `KEY_*` names. |
 
-Example, `~/.config/lumen-tv/apps/youtube.toml`:
+A complete browser example with a user agent, extension arguments and a `[keys]` table ships as `config/apps/youtube.toml`.
 
-```toml
-id = "youtube"
-name = "YouTube"
-type = "url"
-url = "https://www.youtube.com/tv"
-background = "keep-alive"
-app_id = "lumen-youtube"
-glyph = "Y"
-colors = ["#7a0b0b", "#ff3030"]
-order = 20
-```
-
-URL apps open with `$LUMEN_BROWSER` or the default `chromium --kiosk --ozone-platform=wayland ... --class=lumen-{id} ... {url}` (`{id}` and `{url}` are substituted; without `{url}` the URL is appended).
+URL apps open with `$LUMEN_BROWSER` or the default `chromium --kiosk --ozone-platform=wayland ... --class=lumen-{id} ... {url}` (`{id}` and `{url}` are substituted; without `{url}` the URL is appended). The entry's `user_agent` and `browser_args` go where `{args}` is in the template, else just before the URL; with neither set the line is exactly the template.
 
 ## Adding a controller mapping
 

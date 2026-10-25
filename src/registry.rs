@@ -1,5 +1,6 @@
 // App registry: one TOML file per app in ~/.config/lumen-tv/apps/*.toml. The
-// defaults in config/apps/ are built in and written out on first start only.
+// defaults in config/apps/ are built in; each is offered once (see
+// `seed_defaults`), so one the user deletes stays gone.
 // A broken file is skipped and reported as data (`Loaded.errors`, for the M3.5
 // Settings screen), never fatal.
 //
@@ -7,18 +8,28 @@
 // fallback_url, background, exclusive, icon, app_id, glyph, colors, order, and
 // `process`: the path (or comm) of the app's real executable, for launchers
 // that exit at once (Steam Link). Resolving `icon` belongs to icons.rs.
+// `user_agent` / `browser_args` tune the kiosk browser line (apps.rs); `keys`
+// is a per-app key override table (input layer), only its shape is checked here.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 /// The apps built into Lumen.
-pub const SHIPPED: [(&str, &str); 3] = [
+pub const SHIPPED: [(&str, &str); 5] = [
     ("jellyfin.toml", include_str!("../config/apps/jellyfin.toml")),
     ("steamlink.toml", include_str!("../config/apps/steamlink.toml")),
     ("kodi.toml", include_str!("../config/apps/kodi.toml")),
+    ("youtube.toml", include_str!("../config/apps/youtube.toml")),
+    ("airplay.toml", include_str!("../config/apps/airplay.toml")),
 ];
+
+/// Defaults that shipped before the `.shipped` marker existed (pre-M5.1).
+const LEGACY_SHIPPED: [&str; 3] = ["jellyfin", "steamlink", "kodi"];
+
+/// The Lumen actions a `keys` override may name. Home/Menu are deliberately absent.
+pub const KEY_ACTIONS: [&str; 7] = ["Up", "Down", "Left", "Right", "Select", "Back", "PlayPause"];
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -74,6 +85,16 @@ pub struct Entry {
     pub colors: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub order: Option<i32>,
+    /// Browser apps only: sent as `--user-agent=<value>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+    /// Browser apps only: extra Chromium arguments (each starts with `--`;
+    /// a leading `~/` after the first `=` expands to `$HOME`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser_args: Option<Vec<String>>,
+    /// Per-app key override while the app is in front: Lumen action -> `KEY_*` name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keys: Option<BTreeMap<String, String>>,
 }
 
 impl Entry {
@@ -106,8 +127,51 @@ impl Entry {
                 return Err(format!("color {c:?} should look like \"#rrggbb\""));
             }
         }
+        self.validate_browser_fields()?;
+        if let Some(keys) = &self.keys {
+            for (action, key) in keys {
+                if !KEY_ACTIONS.contains(&action.as_str()) {
+                    return Err(format!("keys: unknown action {action:?} (use one of {})", KEY_ACTIONS.join(", ")));
+                }
+                if !is_key_name(key) {
+                    return Err(format!("keys: {action} = {key:?} should look like \"KEY_ESC\""));
+                }
+            }
+        }
         Ok(())
     }
+
+    /// `user_agent` and `browser_args` only mean something for a browser line:
+    /// a `url` entry, or a `command` entry that falls back to `fallback_url`.
+    fn validate_browser_fields(&self) -> Result<(), String> {
+        let is_browser = self.kind == Kind::Url || self.fallback_url.is_some();
+        if !is_browser && (self.user_agent.is_some() || self.browser_args.is_some()) {
+            return Err("user_agent and browser_args need type \"url\" or a fallback_url".into());
+        }
+        if let Some(ua) = &self.user_agent {
+            if ua.trim().is_empty() {
+                return Err("user_agent is empty".into());
+            }
+            if ua.contains(['\n', '\r', '\0']) {
+                return Err("user_agent must be a single line".into());
+            }
+        }
+        for arg in self.browser_args.iter().flatten() {
+            if !arg.starts_with("--") || arg.len() < 3 {
+                return Err(format!("browser_args: {arg:?} should start with \"--\""));
+            }
+            if arg.contains(['\n', '\r', '\0']) {
+                return Err(format!("browser_args: {arg:?} must be a single line"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `KEY_` then upper-case letters, digits or `_` (shape only; the input layer resolves it).
+fn is_key_name(s: &str) -> bool {
+    s.strip_prefix("KEY_")
+        .is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
 }
 
 fn is_hex_color(s: &str) -> bool {
@@ -149,17 +213,49 @@ pub fn apps_dir() -> PathBuf {
     config_dir().join("apps")
 }
 
-/// Writes the built-in files, but only if `dir` doesn't exist yet.
-/// Returns whether it wrote them. Never overwrites anything.
+const SHIPPED_MARKER: &str = ".shipped";
+
+/// Offers the built-in files. `<dir>/.shipped` lists the defaults already
+/// offered (one id per line; `load` ignores it, it isn't `*.toml`).
+/// - `dir` missing: writes everything plus the marker.
+/// - `dir` there, no marker: jellyfin, steamlink and kodi count as offered.
+/// - Then each shipped id not in the marker is written, unless its file
+///   exists, and added to the marker. So a default the user deleted or
+///   uninstalled stays gone, and nothing is ever overwritten.
+///
+/// Returns whether it wrote an app file.
 pub fn seed_defaults(dir: &Path) -> std::io::Result<bool> {
-    if dir.exists() {
-        return Ok(false);
-    }
+    let marker = dir.join(SHIPPED_MARKER);
+    let mut offered: Vec<String> = match std::fs::read_to_string(&marker) {
+        Ok(t) => t.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect(),
+        Err(_) if dir.exists() => LEGACY_SHIPPED.iter().map(|s| s.to_string()).collect(),
+        Err(_) => Vec::new(),
+    };
     std::fs::create_dir_all(dir)?;
+    let mut wrote = false;
+    let mut changed = !marker.exists();
     for (name, text) in SHIPPED {
-        std::fs::write(dir.join(name), text)?;
+        let id = name.trim_end_matches(".toml");
+        if offered.iter().any(|o| o == id) {
+            continue;
+        }
+        let path = dir.join(name);
+        if !path.exists() {
+            std::fs::write(&path, text)?;
+            wrote = true;
+        }
+        offered.push(id.to_string());
+        changed = true;
     }
-    Ok(true)
+    if changed {
+        let tmp = dir.join(".shipped.tmp");
+        std::fs::write(&tmp, offered.join("\n") + "\n")?;
+        if let Err(e) = std::fs::rename(&tmp, &marker) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+    }
+    Ok(wrote)
 }
 
 /// Writes `<id>.toml` into `dir` (created if needed) via a temp file and a
@@ -264,7 +360,7 @@ mod tests {
         let l = load_texts(SHIPPED.iter().map(|(n, t)| (n.to_string(), Ok(t.to_string()))));
         assert!(l.errors.is_empty());
         let ids: Vec<_> = l.entries.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, ["jellyfin", "steamlink", "kodi"]);
+        assert_eq!(ids, ["jellyfin", "youtube", "airplay", "steamlink", "kodi"]);
         let by = |id: &str| l.entries.iter().find(|e| e.id == id).unwrap();
         assert_eq!(by("jellyfin").kind, Kind::Url);
         assert_eq!(by("jellyfin").background, Background::KeepAlive);
@@ -376,14 +472,137 @@ mod tests {
         let dir = temp("seed");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(seed_defaults(&dir).unwrap());
-        assert_eq!(load(&dir).entries.len(), 3);
+        assert_eq!(load(&dir).entries.len(), 5);
         std::fs::write(dir.join("kodi.toml"), "mine").unwrap();
         assert!(!seed_defaults(&dir).unwrap());
         assert_eq!(std::fs::read_to_string(dir.join("kodi.toml")).unwrap(), "mine");
         let l = load(&dir);
-        assert_eq!(l.entries.len(), 2);
+        assert_eq!(l.entries.len(), 4);
         assert_eq!(l.errors.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn marker_ids(dir: &Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join(".shipped")).unwrap().lines().map(String::from).collect()
+    }
+
+    #[test]
+    fn seed_missing_dir_writes_all_and_the_marker() {
+        let dir = temp("seed-missing");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(seed_defaults(&dir).unwrap());
+        assert_eq!(marker_ids(&dir).len(), 5);
+        assert!(load(&dir).errors.is_empty());
+        assert!(!dir.join(".shipped.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seed_upgrade_without_marker_adds_only_the_new_defaults() {
+        let dir = temp("seed-upgrade");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // pre-marker install: jellyfin and kodi present, steamlink deleted by the user
+        std::fs::write(dir.join("jellyfin.toml"), "mine").unwrap();
+        std::fs::write(dir.join("kodi.toml"), "mine").unwrap();
+        assert!(seed_defaults(&dir).unwrap());
+        assert!(dir.join("youtube.toml").exists() && dir.join("airplay.toml").exists());
+        assert!(!dir.join("steamlink.toml").exists(), "a deleted default stays gone");
+        assert_eq!(std::fs::read_to_string(dir.join("jellyfin.toml")).unwrap(), "mine");
+        assert_eq!(marker_ids(&dir).len(), 5);
+        assert!(!seed_defaults(&dir).unwrap(), "second start writes nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seed_with_marker_never_resurrects_or_overwrites() {
+        let dir = temp("seed-marker");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(seed_defaults(&dir).unwrap());
+        std::fs::remove_file(dir.join("youtube.toml")).unwrap();
+        std::fs::write(dir.join("airplay.toml"), "mine").unwrap();
+        assert!(!seed_defaults(&dir).unwrap());
+        assert!(!dir.join("youtube.toml").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("airplay.toml")).unwrap(), "mine");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seed_new_shipped_id_is_written_once_but_not_over_an_existing_file() {
+        let dir = temp("seed-new");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // marker from an older build that offered only the legacy set; the user already made youtube.toml
+        std::fs::write(dir.join(".shipped"), "jellyfin\nsteamlink\nkodi\n").unwrap();
+        std::fs::write(dir.join("youtube.toml"), "mine").unwrap();
+        assert!(seed_defaults(&dir).unwrap());
+        assert_eq!(std::fs::read_to_string(dir.join("youtube.toml")).unwrap(), "mine");
+        assert!(dir.join("airplay.toml").exists());
+        assert!(marker_ids(&dir).contains(&"youtube".to_string()));
+        assert!(!dir.join("jellyfin.toml").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marker_file_is_not_loaded_as_an_app() {
+        let dir = temp("seed-ignored");
+        let _ = std::fs::remove_dir_all(&dir);
+        seed_defaults(&dir).unwrap();
+        let l = load(&dir);
+        assert_eq!(l.entries.len(), 5);
+        assert!(l.errors.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shipped_youtube_and_airplay_have_the_expected_fields() {
+        let y = parse("youtube.toml", include_str!("../config/apps/youtube.toml")).unwrap();
+        assert_eq!(y.browser_args.as_ref().unwrap().len(), 3);
+        assert!(y.user_agent.as_deref().unwrap().contains("GoogleTV"));
+        assert_eq!(y.keys.as_ref().unwrap().get("Back").map(String::as_str), Some("KEY_ESC"));
+        let a = parse("airplay.toml", include_str!("../config/apps/airplay.toml")).unwrap();
+        assert_eq!(a.background, Background::CloseOnExit);
+        assert!(!a.exclusive && a.keys.is_none());
+    }
+
+    const URL_BASE: &str = "id = \"a\"\nname = \"A\"\ntype = \"url\"\nurl = \"http://x\"\n";
+
+    #[test]
+    fn browser_fields_validated() {
+        let ok = |extra: &str| parse("a.toml", &format!("{URL_BASE}{extra}"));
+        assert!(ok("user_agent = \"Mozilla/5.0 (X)\"\nbrowser_args = [\"--a=1\", \"--b\"]\n").is_ok());
+        assert!(ok("user_agent = \"\"\n").unwrap_err().contains("user_agent is empty"));
+        assert!(ok("user_agent = \"a\\nb\"\n").unwrap_err().contains("single line"));
+        assert!(ok("browser_args = [\"-x\"]\n").unwrap_err().contains("should start with"));
+        assert!(ok("browser_args = [\"--\"]\n").is_err());
+        assert!(ok("browser_args = [\"--a\\nb\"]\n").unwrap_err().contains("single line"));
+        // a plain command has no browser line
+        let cmd = "id = \"a\"\nname = \"A\"\nlaunch = \"a\"\n";
+        assert!(parse("a.toml", &format!("{cmd}user_agent = \"x\"\n")).unwrap_err().contains("fallback_url"));
+        assert!(parse("a.toml", &format!("{cmd}browser_args = [\"--x\"]\n")).is_err());
+        assert!(parse("a.toml", &format!("{cmd}fallback_url = \"http://h\"\nbrowser_args = [\"--x\"]\n")).is_ok());
+    }
+
+    #[test]
+    fn keys_validated() {
+        let ok = |extra: &str| parse("a.toml", &format!("{URL_BASE}{extra}"));
+        assert!(ok("[keys]\nBack = \"KEY_ESC\"\nPlayPause = \"KEY_SPACE\"\nUp = \"KEY_F13\"\n").is_ok());
+        assert!(ok("[keys]\nHome = \"KEY_ESC\"\n").unwrap_err().contains("unknown action"));
+        assert!(ok("[keys]\nBack = \"ESC\"\n").unwrap_err().contains("KEY_ESC"));
+        assert!(ok("[keys]\nBack = \"KEY_esc\"\n").is_err());
+        assert!(ok("[keys]\nBack = \"KEY_\"\n").is_err());
+        let cmd = "id = \"a\"\nname = \"A\"\nlaunch = \"a\"\n[keys]\nBack = \"KEY_ESC\"\n";
+        assert!(parse("a.toml", cmd).is_ok(), "keys are allowed on any entry");
+    }
+
+    #[test]
+    fn new_fields_round_trip_through_json() {
+        let e = parse("youtube.toml", include_str!("../config/apps/youtube.toml")).unwrap();
+        let back: Entry = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+        assert_eq!(back, e);
+        let plain = parse("kodi.toml", include_str!("../config/apps/kodi.toml")).unwrap();
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("user_agent") && !json.contains("keys"));
     }
 
     #[test]

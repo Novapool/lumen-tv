@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Lumen YouTube TV cap",
+  "version": "1.0",
+  "description": "Makes YouTube see no AV1 and nothing above 1080p, so the Pi 5 (software decode) gets playable streams.",
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["cap.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    }
+  ]
+}

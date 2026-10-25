@@ -18,6 +18,43 @@
       "uninstall": []
     },
     {
+      "id": "youtube",
+      "name": "YouTube",
+      "type": "url",
+      "url": "https://www.youtube.com/tv",
+      "background": "keep-alive",
+      "app_id": "lumen-youtube",
+      "glyph": "Y",
+      "colors": ["#7a0b0b", "#ff3030"],
+      "order": 20,
+      "user_agent": "Mozilla/5.0 (X11; Linux i686) AppleWebKit/534.24 (KHTML, like Gecko) Chrome/11.0.696.77 Large Screen Safari/534.24 GoogleTV/092754",
+      "browser_args": [
+        "--autoplay-policy=no-user-gesture-required",
+        "--disable-features=DisableLoadExtensionCommandLineSwitch",
+        "--load-extension=~/lumen-tv/config/browser/youtube-tv"
+      ],
+      "keys": { "Back": "KEY_ESC" },
+      "description": "YouTube's TV interface (big tiles, remote and pad friendly) in the kiosk browser.",
+      "detail": "Web app",
+      "install": [],
+      "uninstall": []
+    },
+    {
+      "id": "airplay",
+      "name": "AirPlay",
+      "launch": "~/lumen-tv/session/lumen-airplay",
+      "background": "close-on-exit",
+      "app_id": "lumen-airplay",
+      "glyph": "A",
+      "colors": ["#1c1c1e", "#5e5ce6"],
+      "order": 25,
+      "description": "AirPlay screen mirroring from a phone or Mac, using UxPlay. Installing the packages needs root. Uninstalling does not remove them, because Kodi's Screen Mirror still uses uxplay.",
+      "detail": "apt (root)",
+      "root": true,
+      "install": ["sudo apt install -y uxplay avahi-daemon gstreamer1.0-plugins-bad gstreamer1.0-plugins-good gstreamer1.0-libav python3-gi gir1.2-gtk-3.0"],
+      "uninstall": []
+    },
+    {
       "id": "steamlink",
       "name": "Steam Link",
       "launch": "steamlink",

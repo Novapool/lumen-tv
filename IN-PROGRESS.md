@@ -1,14 +1,14 @@
 # In Progress — Lumen (lumen-tv)
 
-Last updated: 2026-10-24
+Last updated: 2026-10-25
 
 ## Where we are
-Lumen's UI is Slint (femtovg), 60 fps at 1080p60 and 4K60 on the TV. Done through **M5 (2026-10-24)**: registry + launching (Jellyfin, Steam Link, Kodi), Settings/diagnostics, the LG remote (red = Home), the Store (flatpak `--user`), DualSense + Bluetooth panel, and the boot session. **Lumen is pitv's boot default** (`lumen.service` enabled, `kodi.service` disabled, quiet boot; undo: `sudo sh ~/lumen-tv/session/install.sh --apply --revert && sudo reboot`). A Power tile restarts Lumen, reboots or shuts down. **Next: M5.1 YouTube + AirPlay tiles** (not started).
+Lumen's UI is Slint (femtovg), 60 fps at 1080p60 and 4K60 on the TV. Done through **M5.1 (2026-10-25)**: registry + launching (Jellyfin, Steam Link, Kodi), Settings/diagnostics, the LG remote (red = Home), the Store (flatpak `--user`), DualSense + Bluetooth panel, and the boot session. **Lumen is pitv's boot default** (`lumen.service` enabled, `kodi.service` disabled, quiet boot; undo: `sudo sh ~/lumen-tv/session/install.sh --apply --revert && sudo reboot`). A Power tile restarts Lumen, reboots or shuts down. M5.1 (2026-10-25) added default YouTube (youtube.com/tv in kiosk Chromium, keep-alive) and AirPlay (UxPlay inside labwc) tiles. **Next: M5.2 Steam Link in the background** (not started).
 
 ## Active Plan
-Order: M5.1 YouTube + AirPlay tiles → M5.2 Steam Link in the background → root helper → M5.5 → M6 (see MILESTONES.md), stopping after each one for a TV test.
+Order: M5.2 Steam Link in the background → root helper → M5.5 → M6 (see MILESTONES.md), stopping after each one for a TV test.
 
-**M5.1:** not planned yet. Spec + Gates in MILESTONES.md (YouTube Gate confirmed; AirPlay Gate proposed, confirm with Laith). Next: orchestrator writes AGENT_JOBS.md.
+**M5.2:** not planned yet. Starts with a spike on the Pi (Gate confirmed 2026-10-24, see MILESTONES.md).
 
 Layout (as built):
 ```
@@ -86,6 +86,10 @@ Decisions so far:
 - (2026-10-20) DualSense: main node → `playstation.toml` (Cross Select, Circle Back, Options Menu, PS Home, left stick + d-pad, deadzone 0.4); Touchpad and Motion Sensors nodes are ignored by Lumen (the touchpad still moves labwc's pointer; Laith kept it on). Home rules: a PS tap is Home except inside Steam Link, where a held PS (≥ 0.8 s) is Home and a tap belongs to Steam; a controller's held Circle is plain Back while any app is in front (Home only in Lumen's own screens); keyboard F1 and remote red unchanged.
 - (2026-10-20) While a `type = "url"` app is in front, controller actions become keys on Lumen's uinput keyboard "lumen-keys" (arrows, Enter, KEY_BACK, play/pause); Lumen's reader ignores that device. Steam Link and Kodi read the pad themselves.
 
+- (2026-10-25) Per-app registry fields (M5.1): `user_agent`, `browser_args` (each `--…`, `~/` expanded to `$HOME`, shell-quoted; Chromium honours only the last `--disable-features=`), `keys` (`[keys] Back = "KEY_ESC"`: pad keys for web apps, and the CEC keymap for any app while it's in front; Home/Menu never remappable). Every remote claim rewrites the full keymap (rc-cec defaults read on pitv: arrows 103/108/105/106, PlayPause 0x44=200 / 0x46=201; Select 28, Back 158 via Lumen). New defaults reach existing installs once through `apps/.shipped`; a deleted default stays deleted.
+- (2026-10-25) YouTube: `https://www.youtube.com/tv` with the GoogleTV user agent (candidates in youtube.toml), `config/browser/youtube-tv` extension (MV3, loaded with `--disable-features=DisableLoadExtensionCommandLineSwitch` on Chromium 155) hides AV1 and >1080p; plays avc1. Back = Esc.
+- (2026-10-25) AirPlay: `session/lumen-airplay` (Python + GTK 3 waiting window app_id `lumen-airplay`, binds the app) runs `uxplay -n pitv -nh -fs -vs 'waylandsink fullscreen=true' -avdec -as pulsesink`; video window app_id `uxplay` stays unbound. Exits 5 s after the phone stops or 120 s with no client; PR_SET_PDEATHSIG kills uxplay if the wrapper dies. Kodi's `../config/airplay-mirror` + `uxplay.service` are untouched and still Kodi-only.
+
 ## Slint rules (from the spike)
 - Never animate a drop shadow's size or blur: the blur re-renders every frame (56.5 fps, 5.2% slow). Keep the shadow box fixed and fade it with `opacity`. Slint draws no shadow for an unfilled Rectangle, so fill it and hide it behind the face.
 - Slint redraws only on change: frame stats count only frames while something is animating.
@@ -97,7 +101,7 @@ Decisions so far:
 - `if`-created drop-shadow elements re-blur every time they are created; use one fixed shadow Image and fade it.
 
 ## Current Work
-(none: M5 closed 2026-10-24; M5.1 not started)
+(none: M5.1 closed 2026-10-25; M5.2 not started)
 
 Contracts from M5 (as built): mode precedence settings.toml `mode` > `LUMEN_MODE` > 1920x1080@60; store precedence settings.toml `store_url` > `LUMEN_STORE_URL` > default. `platform/output.rs` polls wlr-randr every 2 s and re-applies the saved mode. `lumen.service`: `Restart=always`, `StartLimitBurst=3` in 60 s, then `OnFailure=kodi.service`. Power: `ui/power.slint` + `src/power.rs` (Restart Lumen = exit; reboot/poweroff via `systemctl`, allowed by polkit for the active tty1 session).
 
@@ -121,14 +125,14 @@ Contracts from M5 (as built): mode precedence settings.toml `mode` > `LUMEN_MODE
 - Bench is thermally sensitive: the Pi has no fan; after long builds it throttles at 75-82 C and 4K drops to 45-55 fps (a cool 4K run passed at 60). Let it cool before benching.
 
 ## Next Steps
-1. **M5.1 YouTube + AirPlay tiles:** confirm the AirPlay Gate with Laith, then orchestrator plans it (AGENT_JOBS.md), builders build, stop for the TV test.
-2. **M5.2 Steam Link in the background** (Gate confirmed; starts with a spike on the Pi).
+1. **M5.2 Steam Link in the background** (Gate confirmed; starts with a spike on the Pi). Also revisit `exclusive` (launching Steam Link closes YouTube/Jellyfin).
+2. Push `store/manifest.json` (with the M5.1 commit) now that pitv runs the M5.1 build.
 3. **Root install helper (PIN) milestone (after M5.2):** project-director writes its MILESTONES entry + Gate from the 2026-10-19 scope change, then orchestrator plans it.
 4. Confirm the proposed M5.5 and M6 Gate lines with Laith before either starts.
 5. Untested: uninstalling a keep-alive app while it runs (M4's 8 s wait).
-6. Small: 2 clippy warnings (`src/input/mapping.rs:296` needless closure, `src/store.rs:463` is_multiple_of).
+6. Small: 5 known clippy warnings (`bluetooth.rs:432`, `icons.rs:42/70`, `input/mapping.rs:296`, `store.rs:463`). pitv has no clippy component (`rustup component add clippy`, Laith's call).
 
 ## Recently Completed
+- M5.1 YouTube + AirPlay tiles (2026-10-25): both Gates pass at the TV (Laith). Result line in MILESTONES.md, checklist + build-round notes in docs/ARCHIVE.md.
 - M5 Boot session + polish (2026-10-24): all TV checks pass (Laith). Lumen is the boot default; Power tile; saved resolution survives TV power-cycles; stick rebound fixed; installer + quiet boot. Result line in MILESTONES.md, checklist in docs/ARCHIVE.md.
 - M4.5 Controllers + Bluetooth (2026-10-20): gate passed at the TV. Result line in MILESTONES.md, execution notes in docs/ARCHIVE.md.
-- M4 Store (2026-10-20): gate passed on the Pi and at the TV. Result line in MILESTONES.md, execution notes in docs/ARCHIVE.md.

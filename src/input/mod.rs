@@ -9,7 +9,7 @@
 //   keys_out.rs  gamepad actions → keyboard keys for web apps (uinput)
 
 mod dispatch;
-mod keys_out;
+pub mod keys_out;
 mod mapping;
 pub use mapping::SHIPPED;
 
@@ -41,6 +41,21 @@ static FOREGROUND_WEB: AtomicBool = AtomicBool::new(false);
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn set_foreground_web(web: bool) {
     FOREGROUND_WEB.store(web, Ordering::Relaxed);
+}
+
+static OVERRIDES: Mutex<Vec<crate::platform::KeyOverride>> = Mutex::new(Vec::new());
+
+/// The foreground app's resolved `keys` overrides for the pad (empty = the
+/// defaults). Set from the session next to `set_foreground_web`.
+pub fn set_key_overrides(o: Vec<crate::platform::KeyOverride>) {
+    if let Ok(mut f) = OVERRIDES.lock() {
+        *f = o;
+    }
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn key_overrides() -> Vec<crate::platform::KeyOverride> {
+    OVERRIDES.lock().map(|o| o.clone()).unwrap_or_default()
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

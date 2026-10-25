@@ -11,10 +11,10 @@ Lumen: an Apple TV-style launcher for pitv (Rust + Slint UI, evdev input, labwc 
 
 ## Layout
 - `src/`: Rust (main + Slint callbacks, input, registry, apps, icons, bake, `diag.rs`/`logtail.rs` = Settings panel data + log capture, `reclaim.rs` = CEC remote re-claim, `home.rs` = Home tiles + live reload, `store.rs`/`storefeed.rs` = Store core + Slint wiring, `bluetooth.rs`/`btfeed.rs` = Bluetooth panel core + Slint wiring, `input/keys_out.rs` = controller → keys for web apps, `session.rs` = glue between registry, lifecycle, windows and the Home gate, `settings.rs` = settings.toml (mode, store_url), `power.rs` = Power tile actions, `platform/` incl. `output.rs` = HDMI mode watcher). `ui/`: `.slint` files (`settings.slint` = Settings, `store.slint`/`details.slint` = Store, `bluetooth.slint` = Bluetooth panel, `power.slint` = Power screen), compiled by `build.rs`.
-- `config/input/`: shipped input mapping files (built into the binary). `config/apps/`: default app registry TOMLs (built in; seeded to `~/.config/lumen-tv/apps/`).
+- `config/input/`: shipped input mapping files (built into the binary). `config/apps/`: default app registry TOMLs (built in; seeded to `~/.config/lumen-tv/apps/`, new ones once via `apps/.shipped`). `config/browser/youtube-tv/`: Chromium extension for the YouTube tile (no AV1, ≤ 1080p).
 - `examples/`: `fake-pad.rs` (virtual controller; `dualsense` mode), `press.rs` (taps keys via uinput) and `toplevels.rs` (lists labwc toplevels): the M3 gate instruments.
 - `store/manifest.json`: the Store's app list, served from GitHub raw.
-- `session/`: labwc config, `start-lumen.sh`, `lumen.service` (boot unit), `lumen-test.service`, `install.sh` (dry run by default), sudoers. `scripts/pi-build.sh`: sync to pitv and build there.
+- `session/`: labwc config, `start-lumen.sh`, `lumen-airplay` (AirPlay tile: UxPlay in labwc, tests in `test_lumen_airplay.py`), `lumen.service` (boot unit), `lumen-test.service`, `install.sh` (dry run by default), sudoers. `scripts/pi-build.sh`: sync to pitv and build there.
 
 ## Rules
 - Build milestone by milestone and stop after each one for Laith to test on the TV.

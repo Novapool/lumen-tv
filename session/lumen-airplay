@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""AirPlay screen mirroring for the Lumen session (the `airplay` command app).
+
+Lumen treats the launcher process as the app, and an app with no bound window is
+invisible to Home. So this opens a fullscreen GTK window with Wayland app_id
+`lumen-airplay` at once (Lumen binds it; Home then closes it and SIGTERMs us),
+and runs UxPlay, whose own video window (waylandsink) covers ours while mirroring.
+
+UxPlay has no exit-on-disconnect option, so we watch its log (same logic as the
+Kodi-era ../config/airplay-mirror):
+  - exit GRACE seconds after the phone stops mirroring ("raop_rtp_mirror->running
+    is no longer true"); a new "starting mirroring" within GRACE cancels it
+  - exit after IDLE_TIMEOUT seconds with no client
+  - any UxPlay output line counts as activity for the idle clock
+"""
+import os
+import signal
+import subprocess
+import sys
+import time
+
+APP_ID = "lumen-airplay"
+IDLE_TIMEOUT = 120   # seconds with no client before giving up
+GRACE = 5            # seconds after the last client leaves before exiting
+KILL_WAIT = 5        # seconds between SIGTERM and SIGKILL of uxplay
+
+VIDEO_SINK = "waylandsink fullscreen=true"
+# PipeWire owns HDMI; pipewire-pulse speaks pulse (there is no pipewiresink).
+AUDIO_SINK = "pulsesink"
+CMD = [
+    "stdbuf", "-oL", "-eL", "uxplay",
+    "-n", "pitv", "-nh",                       # shows as "pitv" in Screen Mirroring
+    "-fs", "-vs", VIDEO_SINK,
+    "-avdec",                                  # Pi 5 has no H.264 hardware decoder
+    "-as", AUDIO_SINK,
+    "-s", "1920x1080@60",
+]
+
+START_MARK = "raop_rtp_mirror starting mirroring"
+STOP_MARK = "raop_rtp_mirror->running is no longer true"
+
+
+def log(msg):
+    print(f"[lumen-airplay] {msg}", flush=True)
+
+
+class Watch:
+    """Pure state machine; no GTK, no clock of its own (callers pass `now`)."""
+
+    def __init__(self, now, idle_timeout=IDLE_TIMEOUT, grace=GRACE):
+        self.idle_timeout = idle_timeout
+        self.grace = grace
+        self.mirroring = False
+        self.last_activity = now
+        self.stopped_since = None
+
+    def feed(self, line, now):
+        if START_MARK in line:
+            self.mirroring, self.stopped_since = True, None
+        elif STOP_MARK in line:
+            self.mirroring, self.stopped_since = False, now
+        self.last_activity = now
+
+    def tick(self, now):
+        """None to keep going, "stopped" (phone left) or "idle" (nobody came)."""
+        if self.stopped_since is not None and now - self.stopped_since > self.grace:
+            return "stopped"
+        if (not self.mirroring and self.stopped_since is None
+                and now - self.last_activity > self.idle_timeout):
+            return "idle"
+        return None
+
+    def seconds_left(self, now):
+        """Seconds until the idle timeout, or None while mirroring / in grace."""
+        if self.mirroring or self.stopped_since is not None:
+            return None
+        return max(0, int(self.idle_timeout - (now - self.last_activity) + 0.999))
+
+
+def split_lines(buf, chunk):
+    """Append a raw chunk to the carry-over buffer; return (complete lines, rest)."""
+    buf = bytes(buf) + chunk
+    parts = buf.split(b"\n")
+    rest = parts.pop()
+    return [p.decode("utf-8", errors="replace") + "\n" for p in parts], rest
+
+
+def _die_with_parent():
+    # Runs in the child before exec: uxplay gets SIGTERM if the wrapper dies, even by SIGKILL.
+    import ctypes
+    ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+
+
+def main():
+    import gi
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
+    from gi.repository import Gdk, GLib, Gtk
+
+    # The Wayland app_id comes from the program class/name; Lumen binds on it.
+    GLib.set_prgname(APP_ID)
+    Gdk.set_program_class(APP_ID)
+
+    state = {"code": 0, "done": False}
+    watch = Watch(time.monotonic())
+
+    procs = []   # holds the uxplay Popen once started
+    carry = [b""]
+
+    win = Gtk.Window()
+    win.set_title("AirPlay")
+    win.set_decorated(False)
+    win.connect("key-press-event", lambda w, ev: on_key(ev))
+    win.connect("destroy", lambda *_: finish(0))
+
+    height = 1080
+    mon = Gdk.Display.get_default().get_primary_monitor() or Gdk.Display.get_default().get_monitor(0)
+    if mon is not None:
+        height = mon.get_geometry().height or height
+    css = Gtk.CssProvider()
+    css.load_from_data(
+        f"window {{ background: #000; }} label {{ color: #fff; }}"
+        f" .title {{ font-size: {int(height * 0.12)}px; font-weight: bold; }}"
+        f" .hint {{ font-size: {int(height * 0.04)}px; color: #cfcfcf; }}"
+        f" .small {{ font-size: {int(height * 0.025)}px; color: #8a8a8a; }}".encode())
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=int(height * 0.03))
+    box.set_valign(Gtk.Align.CENTER)
+    title = Gtk.Label(label="AirPlay")
+    hint = Gtk.Label(label="On your iPhone or Mac: Screen Mirroring → pitv")
+    small = Gtk.Label(label="")
+    title.get_style_context().add_class("title")
+    hint.get_style_context().add_class("hint")
+    small.get_style_context().add_class("small")
+    for w in (title, hint, small):
+        box.pack_start(w, False, False, 0)
+    win.add(box)
+    win.fullscreen()
+    win.show_all()
+
+    def on_key(ev):
+        if ev.keyval in (Gdk.KEY_Escape, Gdk.KEY_BackSpace, Gdk.KEY_XF86Back):
+            log("back pressed; leaving")
+            finish(0)
+        return True
+
+    def stop_uxplay():
+        if not procs:
+            return
+        proc = procs[0]
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=KILL_WAIT)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+
+    def finish(code):
+        if state["done"]:
+            return
+        state["done"] = True
+        state["code"] = code
+        stop_uxplay()
+        Gtk.main_quit()
+
+    def on_output(fd, cond):
+        if cond & GLib.IO_IN:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                return False   # EOF: on_tick sees uxplay's exit
+            lines, carry[0] = split_lines(carry[0], chunk)
+            for line in lines:
+                print(line, end="", flush=True)   # UxPlay's log goes to the journal
+                was = watch.mirroring
+                watch.feed(line, time.monotonic())
+                if watch.mirroring != was:
+                    title.set_text("Mirroring" if watch.mirroring else "AirPlay")
+                    small.set_text("")
+        if cond & (GLib.IO_HUP | GLib.IO_ERR) and not cond & GLib.IO_IN:
+            return False
+        return True
+
+    def on_tick():
+        if state["done"]:
+            return False
+        proc = procs[0]
+        if proc.poll() is not None:
+            log(f"uxplay exited by itself (code {proc.returncode})")
+            finish(1)
+            return False
+        now = time.monotonic()
+        why = watch.tick(now)
+        if why:
+            log("phone stopped mirroring; returning to Lumen" if why == "stopped"
+                else "nobody connected; returning to Lumen")
+            finish(0)
+            return False
+        left = watch.seconds_left(now)
+        small.set_text("" if left is None else f"Closing in {left} s if nobody connects")
+        return True
+
+    def on_signal():
+        log("signal received; leaving")
+        finish(0)
+        return False
+
+    GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, on_signal)
+    GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, on_signal)
+
+    try:
+        try:
+            proc = subprocess.Popen(CMD, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    bufsize=0, preexec_fn=_die_with_parent)
+        except OSError as e:
+            log(f"cannot start uxplay: {e}")
+            return 1
+        procs.append(proc)
+        log(f"started uxplay (pid {proc.pid}); idle timeout {IDLE_TIMEOUT}s")
+        watch.last_activity = time.monotonic()
+        GLib.io_add_watch(proc.stdout.fileno(), GLib.PRIORITY_DEFAULT,
+                          GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, on_output)
+        GLib.timeout_add_seconds(1, on_tick)
+        Gtk.main()
+    finally:
+        stop_uxplay()
+    return state["code"]
+
+
+if __name__ == "__main__":
+    sys.exit(main())

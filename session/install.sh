@@ -40,10 +40,11 @@ PKG_APPS="chromium flatpak"                      # web apps in kiosk mode, Store
 PKG_CEC="v4l-utils"                              # cec-ctl, TV remote claim/re-claim
 PKG_BT="bluez"                                   # Bluetooth panel (controllers)
 PKG_AUDIO="pipewire pipewire-pulse pipewire-alsa wireplumber"  # sound for apps
+PKG_AIRPLAY="uxplay avahi-daemon gstreamer1.0-plugins-bad gstreamer1.0-plugins-good gstreamer1.0-libav python3-gi gir1.2-gtk-3.0"  # AirPlay mirroring (plugins-good has pulsesink)
 # Build (cargo build on the Pi; rustup is installed separately, see end of run).
 PKG_BUILD="build-essential pkg-config rsync curl"            # toolchain bits, scripts/pi-build.sh uses rsync
 PKG_DEV="libssl-dev libfontconfig-dev libfreetype-dev libxkbcommon-dev libwayland-dev libegl-dev libgles-dev libgl-dev libx11-dev libxcb1-dev"  # Slint + femtovg + winit
-PACKAGES="$PKG_SESSION $PKG_APPS $PKG_CEC $PKG_BT $PKG_AUDIO $PKG_BUILD $PKG_DEV"
+PACKAGES="$PKG_SESSION $PKG_APPS $PKG_CEC $PKG_BT $PKG_AUDIO $PKG_AIRPLAY $PKG_BUILD $PKG_DEV"
 
 # --- helpers -----------------------------------------------------------------
 say() { printf '%s\n' "$*"; }

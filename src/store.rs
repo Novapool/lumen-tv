@@ -646,11 +646,11 @@ mod tests {
         let m = parse_manifest(MANIFEST);
         assert!(m.errors.is_empty(), "{:?}", m.errors);
         let ids: Vec<_> = m.apps.iter().map(|a| a.id()).collect();
-        assert_eq!(ids, ["jellyfin", "steamlink", "kolourpaint", "store-test"]);
+        assert_eq!(ids, ["jellyfin", "youtube", "airplay", "steamlink", "kolourpaint", "store-test"]);
         let by = |id: &str| m.apps.iter().find(|a| a.id() == id).unwrap();
         assert!(by("steamlink").root && !by("kolourpaint").root);
         assert!(by("jellyfin").install.is_empty());
-        // The manifest's jellyfin/steamlink registry fields match the shipped TOMLs.
+        // The manifest's shipped ids' registry fields match the shipped TOMLs.
         for (name, text) in registry::SHIPPED {
             let e = registry::parse(name, text).unwrap();
             if let Some(a) = m.apps.iter().find(|a| a.id() == e.id) {
@@ -992,7 +992,7 @@ mod tests {
         let path = p.to_string_lossy().into_owned();
         assert_eq!(fetch(&path).unwrap(), MANIFEST);
         assert_eq!(fetch(&format!("file://{path}")).unwrap(), MANIFEST);
-        assert_eq!(load_manifest(&path).unwrap().apps.len(), 4);
+        assert_eq!(load_manifest(&path).unwrap().apps.len(), 6);
         assert!(fetch("/nonexistent/manifest.json").is_err());
         assert!(load_manifest("/nonexistent/manifest.json").is_err());
         let _ = std::fs::remove_dir_all(dirs.registry.parent().unwrap());

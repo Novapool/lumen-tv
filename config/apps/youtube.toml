@@ -1,0 +1,36 @@
+# YouTube's TV interface (the "leanback" UI: big tiles, remote/pad friendly)
+# in the kiosk browser. YouTube serves it to TV browsers, so `user_agent`
+# presents as a Google TV set. Candidate A is the classic GoogleTV UA. If
+# YouTube redirects it to the desktop site, try B (PS4:
+# "Mozilla/5.0 (PlayStation 4 5.55) AppleWebKit/601.2 (KHTML, like Gecko)
+# LeanbackShell/1.0 Safari/601.2") or C (Tizen:
+# "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/537.36 (KHTML, like
+# Gecko) Version/5.0 NativeTVAds Chrome/69.0.3497.106 TV Safari/537.36").
+#
+# The Pi decodes video in software (no AV1, nothing above 1080p), so the
+# extension in config/browser/youtube-tv hides AV1 and >1080p from the page.
+# Chromium 137+ only loads command-line extensions with
+# --disable-features=DisableLoadExtensionCommandLineSwitch. (Chromium honours
+# only the last --disable-features= / --enable-features= flag, so keep at most
+# one of each in browser_args.)
+#
+# [keys] Back: the leanback UI goes back on Esc, so the pad's Back button and
+# the TV remote's Back send KEY_ESC while YouTube is in front.
+id = "youtube"
+name = "YouTube"
+type = "url"
+url = "https://www.youtube.com/tv"
+background = "keep-alive"
+app_id = "lumen-youtube"
+glyph = "Y"
+colors = ["#7a0b0b", "#ff3030"]
+order = 20
+user_agent = "Mozilla/5.0 (X11; Linux i686) AppleWebKit/534.24 (KHTML, like Gecko) Chrome/11.0.696.77 Large Screen Safari/534.24 GoogleTV/092754"
+browser_args = [
+    "--autoplay-policy=no-user-gesture-required",
+    "--disable-features=DisableLoadExtensionCommandLineSwitch",
+    "--load-extension=~/lumen-tv/config/browser/youtube-tv",
+]
+
+[keys]
+Back = "KEY_ESC"

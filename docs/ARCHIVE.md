@@ -196,3 +196,53 @@ Part C, boot switch (Laith's sudo, on the Pi):
 - [ ] T14 Visual polish walk-through: note overscan margins, text sizes, focus visuals, transitions, Store/Details/Bluetooth layouts → becomes a follow-up builder job before M5 closes.
 
 M5 contracts (as built): mode precedence settings.toml `mode` > `LUMEN_MODE` > 1920x1080@60; store precedence settings.toml `store_url` > `LUMEN_STORE_URL` > default (`~/.config/lumen-tv/settings.toml`, written atomically by the Resolution toggle). `platform/output.rs` polls wlr-randr every 2 s and re-applies the saved mode (3 tries, then gives up until the output reappears or the target changes). `lumen.service`: `Restart=always`, `StartLimitBurst=3` in 60 s, then `OnFailure=kodi.service`. Build-round review/test reports: docs/ARCHIVE.md.
+
+## M5.1 build round (2026-10-24/25): review + test reports
+Moved from IN-PROGRESS.md. All three blocking review issues below were fixed before the Pi build.
+
+### Review (M5.1, Job 3.1, 2026-10-24)
+**Summary:** Every scope item in Jobs 1.1-2.2 is there. Mac `cargo test` gives 306 passed, the wrapper's 9 Python tests pass, `node --check cap.js` passes and the manifest is valid JSON. The browser quoting is injection-safe. The `.shipped` seeding matches all four rules. With no `keys`, the pad and remote paths behave exactly as before. Home during mirroring is reliable: the waylandsink window stays unbound and `fg` stays `App(airplay)`, so `home()` closes the GTK window and SIGTERMs, then SIGKILLs, both the wrapper and `uxplay` (pids collected before the close). There is one blocking bug: the wrapper's log reader can hold UxPlay lines back indefinitely, so "stop on the phone returns within ~6 s" (A4) can fail. There is also one `uxplay` leak path and one keymap-restore gap. Not ready for the TV until the Critical is fixed.
+
+**Issues**
+1. **Critical**: `session/lumen-airplay:94-95,157-169`. `on_output` calls `proc.stdout.readline()` once per `IO_IN` wakeup. But `proc.stdout` is a buffered TextIOWrapper, which reads about 8 KB chunks from the pipe. When UxPlay writes several lines between wakeups (its startup banner, connection setup), one wakeup pulls all of them into Python's buffer and returns only the first. The fd is then empty, so GLib doesn't fire again until UxPlay writes more, and the backlog grows with every burst. If the STOP line ends up in that backlog and UxPlay then goes quiet, `watch.mirroring` stays True. The idle path is gated on `not mirroring`, so the wrapper sits on "Mirroring" forever: A4 fails, and so does the A6-style give-up. *Fix:* start with `bufsize=0` and binary pipes. In `on_output`, call `os.read(fd, 65536)`, append to a `bytearray`, split complete lines on `b"\n"`, and feed each one, decoded with `errors="replace"`. Treat an empty read as HUP. Add a test that feeds two lines in one chunk, through a small pure `split_lines(buf, chunk)` helper.
+2. **Required**: `session/lumen-airplay:94` plus `src/apps.rs:495-515`. `uxplay` outlives the wrapper whenever the wrapper dies without Lumen sending a Terminate. `process_exited` → `finish` sends no Terminate step, so nothing sweeps the tree. That happens on: an unhandled exception between `Popen` (line 94) and `Gtk.main()` (for example, `Gdk.Display.get_default()` returns None at line 108); a SIGTERM before `unix_signal_add` (line 200), because Python's default action kills it; or a SIGKILL or OOM kill of the wrapper. The orphan keeps advertising "pitv" and holds UxPlay's ports, so the next AirPlay launch's `uxplay` fails and the tile shows "uxplay exited by itself" until Lumen restarts (only the `lumen.service` cgroup kill clears it). *Fix:* (a) pass `preexec_fn` that calls `ctypes.CDLL(None).prctl(1, signal.SIGTERM)` (PR_SET_PDEATHSIG; `stdbuf` → exec `uxplay` keeps it). (b) Build the window and install the signal handlers before `Popen`. (c) Wrap everything after `Popen` in `try: ... finally: stop_uxplay()`.
+3. **Required**: `src/platform/pi.rs` `Desired` / `plan` / `apply_desired`. The restart restore covers only the `REMAP` scancodes. The kernel keymap survives a Lumen crash or restart. `DESIRED` starts with `dirty: false`, so the first claim after a restart writes `plan(&[], false)` = Select and Back only. Shipped YouTube (Back only) is restored, with a spurious "expected 174" warning. An override on Up/Down/Left/Right/PlayPause, for example `PlayPause = "KEY_K"` if Y6 needs it, stays in the keymap after a crash with that app in front, and the remote's Play/Pause is dead everywhere until that app is foregrounded and left again. *Fix (structural, removes concepts):* always write the full `BUTTONS` plan. `remap_remote` already skips entries that are correct ("already"), so this costs 8 GET ioctls. That deletes `full`, `dirty`, the `always`/`over` filter and the `warn` flag (check `now` against `default`/`to` only), and fixes the restart case. Update `no_overrides_plan_is_exactly_remap` to assert that the resulting keymap equals the REMAP targets plus the rc-cec defaults.
+
+**Nits / FYI**
+- Nit, `src/input/keys_out.rs` `resolve_overrides`/`action_name`: re-declares the action list that `registry::KEY_ACTIONS` already holds. Use `KEY_ACTIONS.iter().find(...)` so the two can't drift. The comment "lowercase-free action names" is garbled.
+- Nit, `src/session.rs` `sync_tiles`: three separate `match c.lc.foreground()` blocks (web flag, keys, label) are now bolted onto a function documented as "tiles + poller". Look up the foreground entry once and move the input side into `fn sync_foreground_input(c, fg_entry: Option<&Entry>)`.
+- Nit, `session/lumen-airplay` `stop_uxplay`: blocks the GTK loop for up to 5 s (the window freezes). That's harmless here because Lumen has already switched away, but a one-line comment would help.
+- FYI, `store/manifest.json`: the running M5 Lumen on pitv parses the Store manifest from GitHub raw with `deny_unknown_fields`. Pushing this manifest before pitv runs the new build shows `youtube` as a manifest error in the Store. Deploy first, then push.
+- FYI, `keys` is accepted on `command` entries (by design), but there it only remaps the TV remote: the pad injects keys for `url` apps only. The README row says "the pad's keys and the TV remote's", so add "(pad: web apps only)".
+
+**What works well**
+- `quote_browser_arg` keeps everything single-quoted and only splices a bare `"$HOME"` between quoted halves. `$(...)`, `'` and non-leading `~` can't escape (tested), and a no-extras entry yields exactly today's line.
+- The keymap last-writer-wins design is right: state is recorded on the UI thread in foreground order, and the newest record is read under the write lock. A late worker or a re-claim can't leave a stale map.
+- Seeding is minimal and correct: it never overwrites, never resurrects a deleted default, writes the marker via tmp+rename, and has tests for all four cases.
+
+**Verdict:** Patch and ship. Fix #1 (the gate blocker), #2 and #3, then run Job 4.1.
+
+### Test Results (M5.1, Job 4.1, 2026-10-24)
+**Verdict: Fail** (one step, pitv clippy, could not run: the Pi's Rust toolchain has no clippy component. Everything else passes.)
+
+Read-only check of the review fixes before the build: `session/lumen-airplay` has the `os.read` chunked reader, `PR_SET_PDEATHSIG` and the `try/finally` stop path; `src/platform/pi.rs` no longer has the `dirty`/`full` fields.
+
+| # | Command | Where | Exit | Result |
+|---|---|---|---|---|
+| 1 | `~/.cargo/bin/cargo test` | Mac | 0 | 304 passed, 0 failed, 2 ignored |
+| 2 | `~/.cargo/bin/cargo clippy --all-targets` | Mac | 0 | 5 warnings, all known: `bluetooth.rs:432` (manual_div_ceil), `icons.rs:42` and `icons.rs:70` (large_enum_variant), `input/mapping.rs:296`, `store.rs:463`. No new warnings. |
+| 3 | `python3 -m unittest session/test_lumen_airplay.py` | Mac | 0 | Ran 11 tests, OK |
+| 4 | `sh -n session/install.sh` | Mac | 0 | no output |
+| 5 | `node --check config/browser/youtube-tv/cap.js` | Mac | 0 | no output |
+| 6 | `scripts/pi-build.sh` (rsync + `cargo build --release`) | Mac → pitv | 0 | `Finished release profile [optimized] target(s) in 2m 41s`. No compile errors or warnings. |
+| 7 | `ssh pitv 'cd lumen-tv && ~/.cargo/bin/cargo test --release'` | pitv | 0 | `test result: ok. 312 passed; 0 failed; 2 ignored` (Linux-only tests included) |
+| 8 | `ssh pitv 'cd lumen-tv && ~/.cargo/bin/cargo clippy --release --all-targets'` | pitv | **1** | `error: 'cargo-clippy' is not installed for the toolchain 'stable-aarch64-unknown-linux-gnu'.` / `help: run \`rustup component add clippy\` to install it`. Not run: needs a toolchain component install on pitv (Laith's call). |
+| 9 | `ssh pitv 'cd lumen-tv && python3 -m unittest session/test_lumen_airplay.py'` | pitv | 0 | Ran 11 tests, OK |
+
+Not run, per the job: `lumen.service`, `lumen-test.service`, `uxplay.service` and `kodi.service` were not touched. No sudo. No code changed. The Pi binary was rebuilt in `~/lumen-tv/target/release/` but nothing was restarted, so the running Lumen is still the previous build.
+
+Open: pitv clippy needs `rustup component add clippy` on the Pi before it can gate. Then re-run step 8 (or accept the Mac clippy result, which is the same source).
+
+## M5.1 TV checklist (2026-10-25, all pass)
+Y1-Y7 pass (Laith; codec avc1; YouTube PID 1527 kept through 8 Home round trips). Y8 Home bench with YouTube in the background: motion 60 fps / 0% slow, idle 60.1 / 0.6%. A1-A2 pass (iPhone 17 connected, video window app_id `uxplay` fullscreen, sound). A3: longest logged mirror 4 min 4 s, accepted by Laith as smooth. A4 phone stop 11:51:37 → Home 11:51:43 (6 s). A5 red mid-mirror 11:50:40 and PS mid-mirror 11:57:58, both close in 1 s, no uxplay left. A6 no client 11:51:48 → gave up 11:53:49 (121 s). A7 uxplay.service/kodi.service never active. Pi 66-72 °C during the test.
+Pre-TV Pi checks: V1 packages (uxplay 1.71.1, plugins bad/good/libav, python3-gi, GTK 3, avahi active, nothing to install); V2 Store manifest 6 apps / 0 errors; V3 waylandsink has `fullscreen` (read from the .so; no Gst gir on the Pi); V4 wrapper compiles + executable; V5 headless Chromium with UA candidate A gets "YouTube on TV" (leanback `ytlr-*`) and the extension's `data-lumen-cap="1"` (so `--load-extension` works on Chromium 155; without the UA the page is empty); V6 `youtube.toml`, `airplay.toml`, `.shipped` seeded, 0 registry errors. Pi clippy not run (no clippy component on pitv; Mac clippy clean).

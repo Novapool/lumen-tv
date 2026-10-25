@@ -184,7 +184,7 @@ fn run(
     let mut out = Out::open();
     // Gamepad actions become keys while a web app is in front.
     let mut inject = |class: SourceClass, action: Action| {
-        if let Some((name, code)) = keys_out::app_key(class, action, super::foreground_is_web()) {
+        if let Some((name, code)) = keys_out::app_key(class, action, super::foreground_is_web(), &super::key_overrides()) {
             if debug.load(Ordering::Relaxed) {
                 println!("[input] -> app key {name}");
             }

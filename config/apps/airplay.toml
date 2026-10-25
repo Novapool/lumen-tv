@@ -1,0 +1,13 @@
+# AirPlay screen mirroring: UxPlay running inside the Lumen (labwc) session,
+# started by the wrapper session/lumen-airplay. It opens its own fullscreen
+# window (app_id lumen-airplay) so Lumen can bind it, and exits after the
+# phone stops mirroring or nobody connects. It does not use uxplay.service
+# (that unit belongs to Kodi's Screen Mirror).
+id = "airplay"
+name = "AirPlay"
+launch = "~/lumen-tv/session/lumen-airplay"
+background = "close-on-exit"
+app_id = "lumen-airplay"
+glyph = "A"
+colors = ["#1c1c1e", "#5e5ce6"]
+order = 25

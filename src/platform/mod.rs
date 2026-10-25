@@ -22,6 +22,26 @@ pub trait Tv {
     /// apps. Returns a one-line status (identity, remap result, time) for
     /// Settings; a failed remap is reported in the status, not as an error.
     fn claim_remote(&self) -> Result<String, String>;
+
+    /// Records which keys the remote's buttons should produce while the app
+    /// `label` is in front (empty = defaults). Cheap and non-blocking: call it
+    /// on the UI thread, in order, then `apply_keymap` off-thread. The record is
+    /// what every keymap write (this one and the claim's) applies, so the last
+    /// call wins no matter which worker thread runs last.
+    fn set_key_overrides(&self, label: &str, overrides: &[KeyOverride]);
+
+    /// Writes the recorded overrides into the remote's keymap (blocking ioctls).
+    /// Idempotent. Returns a one-line description of what it did.
+    fn apply_keymap(&self) -> Result<String, String>;
+}
+
+/// One per-app key override: the Lumen action (`"Back"`, ...) now sends this
+/// key (`"KEY_ESC"`, kernel code 1). Resolved by `input::keys_out`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyOverride {
+    pub action: &'static str,
+    pub key: &'static str,
+    pub code: u16,
 }
 
 /// One top-level window of any app, as the compositor reports it.
