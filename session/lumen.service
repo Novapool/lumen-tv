@@ -1,24 +1,33 @@
-# M5 boot session: labwc with Lumen as its only client, on tty1 in place of Kodi.
-# Installed by session/install.sh (user and home are substituted there). Enabling
-# it (install.sh --apply --set-default) is the boot switch; Kodi stays the
-# default until then. lumen-test.service remains the manual test path.
+# Lumen boot session: labwc with Lumen as its only client, on tty1.
+# Installed by session/install.sh (user and home are substituted there).
+# Enabling it (install.sh --apply --set-default) is the boot switch.
+# lumen-test.service remains the manual test path.
 [Unit]
 Description=Lumen session (labwc)
 After=systemd-user-sessions.service network-online.target sound.target bluetooth.target
 Wants=network-online.target
+# The Kodi-era names (kodi.service) are harmless once those units are gone; they
+# get dropped after Laith approves the K5 removals.
 Conflicts=getty@tty1.service kodi.service lumen-test.service steamlink.service uxplay.service
 # Restart the session whenever it exits, crash or clean exit (a clean exit
 # would otherwise leave the TV black). An explicit stop, or a Conflicts= unit
-# such as steamlink starting, is not restarted. Past the start limit the unit
-# goes to "failed" and OnFailure hands the TV to Kodi.
-# (M6 will revisit this rescue once other people install Lumen without Kodi.)
+# such as steamlink starting, is not restarted. Three exits in 60 s put the unit
+# in "failed", and OnFailure then starts a login prompt on tty1 (no autologin):
+# the console rescue. Log in there, fix or revert, then as root run
+# `systemctl reset-failed lumen.service && systemctl start lumen.service` to take
+# tty1 back (a plain start is refused while the start limit is hit).
+# OnFailure=getty@tty1 and Conflicts=getty@tty1 do not fight: OnFailure runs
+# after lumen has failed and stopped, and a later start of lumen.service stops
+# getty again through Conflicts=.
 StartLimitIntervalSec=60
 StartLimitBurst=3
-OnFailure=kodi.service
+OnFailure=getty@tty1.service
 
 [Service]
 User=laith
 Group=laith
+# No lumen-helper group here: if it doesn't exist yet the unit would fail to
+# start. laith gets it through his group list after `install.sh --helper`.
 SupplementaryGroups=input video render audio
 PAMName=login
 TTYPath=/dev/tty1
@@ -32,5 +41,4 @@ Restart=always
 RestartSec=2
 
 [Install]
-# Same target kodi.service uses on pitv.
 WantedBy=multi-user.target

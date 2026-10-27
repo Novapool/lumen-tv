@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "helper"]
+
 [package]
 name = "lumen-tv"
 version = "0.1.0"

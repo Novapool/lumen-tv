@@ -1,0 +1,32 @@
+# Store apps the root helper may install/remove with apt.
+#
+# On the Pi this file lives at /etc/lumen-tv/helper-allowlist.toml (root:root 0644)
+# and is the only place package names come from: never the Store manifest. The helper
+# refuses to run if the file or its directories are writable by anyone but root.
+#
+# Each table is a Store app id. Keys: install, remove, optional update (unknown keys
+# are rejected). To add a set, add a table here, then re-run
+#   sudo sh session/install.sh --apply --helper
+# (it shows a diff before replacing the installed copy).
+
+[root-test]
+install = ["sl"]
+remove = ["sl"]
+
+[steamlink]
+install = ["steamlink"]
+remove = ["steamlink"]
+
+# remove is empty on purpose: Lumen's AirPlay tile (session/lumen-airplay) needs
+# these packages, and avahi/python3-gi/gtk are shared with other things.
+[airplay]
+install = ["uxplay", "avahi-daemon", "gstreamer1.0-plugins-bad", "gstreamer1.0-plugins-good", "gstreamer1.0-libav", "python3-gi", "gir1.2-gtk-3.0"]
+remove = []
+
+# apt "remove" (never purge) keeps ~/.kodi: library, add-ons, settings, saves.
+# The libretro cores are in remove because otherwise apt installs RetroArch as a
+# replacement libretro-frontend; the helper's simulation check refuses any removal
+# not listed here.
+[kodi]
+install = ["kodi", "kodi-game-libretro", "kodi-inputstream-adaptive", "libretro-mgba", "libretro-gambatte", "libretro-desmume", "kodi-repository-kodi"]
+remove = ["kodi", "kodi-game-libretro", "kodi-inputstream-adaptive", "libretro-mgba", "libretro-gambatte", "libretro-desmume", "kodi-repository-kodi", "kodi-visualization-spectrum"]

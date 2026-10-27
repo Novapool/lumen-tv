@@ -9,6 +9,7 @@ import { DiagPanel, DiagRow, SettingsScreen } from "settings.slint";
 import { BluetoothPanel, BtDevice, BtState, BtText } from "bluetooth.slint";
 import { StoreItem, StoreJob, StoreScreen } from "store.slint";
 import { DetailsScreen } from "details.slint";
+import { PinKeys, PinPad } from "pinpad.slint";
 import { PowerScreen, PowerText } from "power.slint";
 
 export { BtDevice, BtState, DiagPanel, DiagRow, StoreItem, StoreJob }
@@ -68,7 +69,8 @@ export component AppWindow inherits Window {
     callback nav-trace(string); // one human line after every nav(); Rust prints it only while input debug is on
 
     // Store contract (Rust feeds these, see src/store.rs). Navigation state:
-    // st-level 0 list, 1 details, 2 confirm, 3 progress.
+    // st-level 0 list, 1 details, 2 confirm, 3 progress, 4 PIN pad (root apps
+    // only, between confirm and progress).
     in-out property <bool> store-open: false;
     in property <int> store-state: 0; // 0 loading, 1 ready, -1 error
     in property <string> store-message: "";
@@ -79,6 +81,17 @@ export component AppWindow inherits Window {
     callback store-reload();
     callback store-run(string, string); // (id, action); only from the confirm screen
     callback store-dismiss();
+    // PIN pad (st-level 4). The digits stay in Rust: Slint only gets how many.
+    callback store-pin-open(string, string); // (id, action) the pad opened for: Rust clears the digits and sets the lock
+    callback store-pin-key(int); // 0..9 = digit, -1 = delete
+    callback store-pin-submit();
+    callback store-pin-cancel();
+    in property <int> pin-digits: 0;
+    in property <string> pin-message: "";
+    in property <bool> pin-busy: false; // the helper is checking the PIN
+    in-out property <int> pin-lock: 0; // seconds left of a lockout; Rust sets it, the Timer counts it down
+    in-out property <bool> pin-no-pin: false; // Rust: the helper says no PIN is set
+    property <int> st-pin-sel: 10;
     property <int> st-level: 0;
     property <int> st-row: 0;
     property <int> st-btn: 0;
@@ -278,7 +291,7 @@ export component AppWindow inherits Window {
                 }
             }
         } else if (root.st-level == 1) {
-            // [action, Back]; needs-root apps only have [Back].
+            // [action, Back]; SSH-only root apps (root-mode 2, 3) only have [Back].
             if (e == NavEvent.back) {
                 root.st-level = 0;
             } else if (e == NavEvent.up) {
@@ -286,11 +299,11 @@ export component AppWindow inherits Window {
             } else if (e == NavEvent.down) {
                 root.st-scroll += 1; // DetailsScreen clamps it
             } else if (e == NavEvent.left || e == NavEvent.right) {
-                if (!root.st-item.needs-root) {
+                if (root.st-item.root-mode < 2) {
                     root.st-btn = e == NavEvent.left ? 0 : 1;
                 }
             } else if (e == NavEvent.select) {
-                if (root.st-item.needs-root || root.st-btn == 1) {
+                if (root.st-item.root-mode >= 2 || root.st-btn == 1) {
                     root.st-level = 0;
                 } else {
                     root.st-level = 2;
@@ -316,8 +329,15 @@ export component AppWindow inherits Window {
                 if (root.st-btn == 1) {
                     // Never start a second job over a running one.
                     if (root.store-job.state != 1) {
-                        root.store-run(root.st-item.id, root.st-item.installed ? "uninstall" : "install");
-                        root.st-level = 3;
+                        if (root.st-item.root-mode == 1) {
+                            // Root app: the PIN pad first; nothing runs until it submits.
+                            root.st-pin-sel = 10;
+                            root.st-level = 4;
+                            root.store-pin-open(root.st-item.id, root.st-item.installed ? "uninstall" : "install");
+                        } else {
+                            root.store-run(root.st-item.id, root.st-item.installed ? "uninstall" : "install");
+                            root.st-level = 3;
+                        }
                     }
                 } else {
                     root.st-level = 1;
@@ -330,6 +350,53 @@ export component AppWindow inherits Window {
             if ((e == NavEvent.select || e == NavEvent.back) && (root.store-job.state == 2 || root.store-job.state == -1)) {
                 root.store-dismiss();
                 root.st-level = 0;
+            }
+        } else if (root.st-level == 4) {
+            // 3x4 grid (index layout in pinpad.slint). Moves clamp at the edges, no wrap.
+            // Nothing leaves or presses while the helper is checking the PIN.
+            if (root.pin-busy) {
+                return;
+            }
+            if (e == NavEvent.back) {
+                root.store-pin-cancel();
+                root.st-level = 1;
+                root.st-btn = 0;
+                root.st-scroll = 0;
+            } else if (e == NavEvent.left) {
+                root.st-pin-sel = root.st-pin-sel - Math.mod(root.st-pin-sel, 3) + max(0, Math.mod(root.st-pin-sel, 3) - 1);
+            } else if (e == NavEvent.right) {
+                root.st-pin-sel = root.st-pin-sel - Math.mod(root.st-pin-sel, 3) + min(2, Math.mod(root.st-pin-sel, 3) + 1);
+            } else if (e == NavEvent.up) {
+                root.st-pin-sel = root.st-pin-sel >= 3 ? root.st-pin-sel - 3 : root.st-pin-sel;
+            } else if (e == NavEvent.down) {
+                root.st-pin-sel = root.st-pin-sel <= 8 ? root.st-pin-sel + 3 : root.st-pin-sel;
+            } else if (e == NavEvent.select && root.pin-lock <= 0) {
+                if (PinKeys.kind(root.st-pin-sel) == 2) {
+                    root.store-pin-submit();
+                } else {
+                    root.store-pin-key(PinKeys.digit(root.st-pin-sel));
+                }
+            }
+        }
+    }
+
+    // The pad leaves for the progress view once the job reports a step (or ends
+    // before one: a refusal before the first step still shows its message there).
+    changed store-job => {
+        if (root.st-level == 4 && (root.store-job.state == 2 || root.store-job.state == -1 || (root.store-job.state == 1 && root.store-job.step >= 1))) {
+            root.st-level = 3;
+        }
+    }
+
+    // The helper says no PIN is set: back to Details, which then shows mode 3.
+    changed pin-no-pin => {
+        if (root.pin-no-pin) {
+            root.pin-no-pin = false;
+            if (root.st-level == 4) {
+                root.st-item.root-mode = 3;
+                root.st-level = 1;
+                root.st-btn = 0;
+                root.st-scroll = 0;
             }
         }
     }
@@ -431,6 +498,10 @@ export component AppWindow inherits Window {
             return "power row=\{PowerText.action(root.pw-row)} confirm=\{root.pw-confirm ? "yes" : "no"} btn=\{root.pw-btn}";
         }
         if (root.store-open) {
+            if (root.st-level == 4) {
+                // Never the digits: only the focused key position and the pad state.
+                return "store level=4 key=\{root.st-pin-sel} digits=\{root.pin-digits} busy=\{root.pin-busy ? "yes" : "no"} lock=\{root.pin-lock}";
+            }
             return "store level=\{root.st-level} row=\{root.st-row}";
         }
         return "home focus=\{root.apps[root.focused].id}";
@@ -674,6 +745,29 @@ export component AppWindow inherits Window {
         sel-btn: root.st-btn;
         confirm: root.st-level == 2;
         scroll <=> root.st-scroll;
+    }
+
+    if root.store-open && root.st-level == 4: PinPad {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        rem: root.rem;
+        title: (root.st-item.installed ? "Uninstall " : "Install ") + root.st-item.name;
+        digits: root.pin-digits;
+        sel: root.st-pin-sel;
+        message: root.pin-lock > 0 ? "Locked: try again in " + root.pin-lock + " s" : root.pin-message;
+        message-level: root.pin-lock > 0 || root.pin-message != "" ? -1 : 0;
+        busy: root.pin-busy || root.pin-lock > 0;
+    }
+
+    // Counts a PIN lockout down while the pad is up (Rust holds the real deadline).
+    Timer {
+        interval: 1s;
+        running: root.store-open && root.st-level == 4 && root.pin-lock > 0;
+        triggered => {
+            root.pin-lock = max(0, root.pin-lock - 1);
+        }
     }
 
     if root.power-open: PowerScreen {

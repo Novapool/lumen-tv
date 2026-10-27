@@ -48,7 +48,7 @@
       "glyph": "A",
       "colors": ["#1c1c1e", "#5e5ce6"],
       "order": 25,
-      "description": "AirPlay screen mirroring from a phone or Mac, using UxPlay. Installing the packages needs root. Uninstalling does not remove them, because Kodi's Screen Mirror still uses uxplay.",
+      "description": "AirPlay screen mirroring from a phone or Mac, using UxPlay. Installing the packages needs root (asks for the PIN). Uninstalling removes the tile and leaves the shared packages installed.",
       "detail": "apt (root)",
       "root": true,
       "install": ["sudo apt install -y uxplay avahi-daemon gstreamer1.0-plugins-bad gstreamer1.0-plugins-good gstreamer1.0-libav python3-gi gir1.2-gtk-3.0"],
@@ -71,6 +71,23 @@
       "root": true,
       "install": ["sudo apt install -y steamlink"],
       "uninstall": ["sudo apt remove -y steamlink"]
+    },
+    {
+      "id": "kodi",
+      "name": "Kodi",
+      "launch": "~/lumen-tv/config/kodi-tile",
+      "background": "close-on-exit",
+      "exclusive": true,
+      "app_id": "Kodi",
+      "icon": "kodi",
+      "glyph": "K",
+      "colors": ["#0d3b5c", "#17b2e7"],
+      "order": 40,
+      "description": "The full Kodi media center, started on its own home with the TV remote kept by Lumen. Installing and uninstalling need the PIN. Uninstalling keeps ~/.kodi (library, add-ons, settings, game saves) and ~/roms.",
+      "detail": "apt (root)",
+      "root": true,
+      "install": ["sudo apt install -y kodi kodi-game-libretro kodi-inputstream-adaptive libretro-mgba libretro-gambatte libretro-desmume kodi-repository-kodi"],
+      "uninstall": ["sudo apt remove -y kodi kodi-game-libretro kodi-inputstream-adaptive libretro-mgba libretro-gambatte libretro-desmume kodi-repository-kodi kodi-visualization-spectrum"]
     },
     {
       "id": "kolourpaint",
@@ -99,6 +116,20 @@
       "detail": "Flatpak (user)",
       "install": ["flatpak install --user -y --noninteractive flathub org.lumen.DoesNotExist"],
       "uninstall": ["flatpak uninstall --user -y --noninteractive org.lumen.DoesNotExist"]
+    },
+    {
+      "id": "root-test",
+      "name": "Root test",
+      "launch": "true",
+      "background": "close-on-exit",
+      "glyph": "R",
+      "colors": ["#2b2b2e", "#8e8e93"],
+      "order": 95,
+      "description": "Only exercises the PIN + root helper path: installs and removes the tiny package sl. It launches nothing.",
+      "detail": "apt (root)",
+      "root": true,
+      "install": ["sudo apt install -y sl"],
+      "uninstall": ["sudo apt remove -y sl"]
     }
   ]
 }

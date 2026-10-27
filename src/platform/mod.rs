@@ -4,6 +4,7 @@
 // control seam; its Linux implementation talks to labwc in `toplevel`.
 
 pub mod fake_bt;
+pub mod installer;
 pub mod output;
 pub mod pi;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -127,4 +128,84 @@ pub fn bluetooth() -> std::sync::Arc<dyn Bluetooth> {
         return std::sync::Arc::new(bluez::BluezBt::default());
     }
     std::sync::Arc::new(fake_bt::FakeBt::default())
+}
+
+// ---- root install helper (M5.3) ----
+
+/// What the helper may install for one Store app id (from its allowlist).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RootSet {
+    pub install: Vec<String>,
+    pub remove: Vec<String>,
+}
+
+/// The helper as seen from Lumen. `available` is false when there is no
+/// helper (socket missing or refused) or it can't be talked to; `note` then
+/// says why, if there is anything to say (a missing helper has no note).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RootStatus {
+    pub available: bool,
+    pub pin_set: bool,
+    pub locked_for_s: u32,
+    pub sets: std::collections::BTreeMap<String, RootSet>,
+    pub note: Option<String>,
+}
+
+impl RootStatus {
+    pub fn unavailable(note: Option<String>) -> Self {
+        RootStatus { note, ..Default::default() }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootOp {
+    Install,
+    Remove,
+}
+
+impl RootOp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RootOp::Install => "install",
+            RootOp::Remove => "remove",
+        }
+    }
+}
+
+/// A streamed message of a running install/remove.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RootEvent {
+    Step(String),
+    Line(String),
+    /// Replaces the previous line (progress bars).
+    Replace(String),
+}
+
+/// How an install/remove ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RootOutcome {
+    Done,
+    Failed { code: i32, message: String },
+    BadPin { tries_left: Option<u32>, locked_for_s: u32 },
+    Locked { locked_for_s: u32 },
+    NoPin,
+    NotAllowed(String),
+    Busy,
+    /// Malformed request, protocol trouble or a broken connection.
+    Error(String),
+    /// There is no helper to talk to.
+    Unavailable,
+}
+
+/// The root install helper. Calls block (socket I/O): use worker threads.
+pub trait RootInstaller: Send + Sync {
+    fn status(&self) -> RootStatus;
+    /// Runs `op` for Store app `id`, streaming output to `on_event`. The PIN is
+    /// only sent, never kept.
+    fn run(&self, op: RootOp, id: &str, pin: &str, on_event: &dyn Fn(RootEvent)) -> RootOutcome;
+}
+
+/// The helper client: the socket at `LUMEN_HELPER_SOCKET`, else `/run/lumen-helper.sock`.
+pub fn root_installer() -> Box<dyn RootInstaller> {
+    Box::new(installer::SocketInstaller::from_env())
 }

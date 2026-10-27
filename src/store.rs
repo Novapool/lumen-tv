@@ -2,10 +2,13 @@
 //
 // Pure logic, no Slint: the UI glue (storefeed.rs) calls `load_manifest`,
 // `uninstall_steps` and `run_job`. Steps run as `sh -c '<step>'` as
-// the current user. `root: true` apps are never run (Lumen never calls sudo),
-// and there is no rollback: a failed job leaves whatever the steps did, but
+// the current user. `root: true` apps never run a manifest string: they make
+// one call to the root helper (`platform::RootInstaller`, needs the PIN) for
+// the packages on the helper's own allowlist. Lumen itself never escalates.
+// There is no rollback: a failed job leaves whatever the steps did, but
 // writes no registry entry and removes none.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -15,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use crate::platform::{self, RootEvent, RootInstaller, RootOp, RootOutcome, RootSet, RootStatus};
 use crate::registry::{self, Entry};
 
 pub(crate) const DEFAULT_URL: &str = "https://raw.githubusercontent.com/Novapool/lumen-tv/main/store/manifest.json";
@@ -154,7 +158,7 @@ pub fn source() -> String {
 
 /// Blocking: reads a local path / `file://` URL, or runs `curl -fsSL --max-time 20`.
 pub fn fetch(source: &str) -> Result<String, String> {
-    if source.starts_with('/') || source.starts_with("file://") {
+    if !source.contains("://") || source.starts_with("file://") {
         let path = source.strip_prefix("file://").unwrap_or(source);
         return std::fs::read_to_string(path).map_err(|e| format!("can't read {path}: {e}"));
     }
@@ -284,6 +288,11 @@ pub enum JobEvent {
     /// `code` is the exit status, -1 if the step was killed or didn't start (0 when
     /// the steps passed but writing the registry entry failed).
     Failed { k: usize, code: i32, message: String },
+    /// Root apps only: the helper refused the PIN. Ends the job; nothing was
+    /// installed or written. `tries_left` is None once locked.
+    PinRejected { tries_left: Option<u32>, locked_for_s: u32 },
+    /// Root apps only: the helper has no PIN set. Ends the job.
+    NoPin,
 }
 
 /// Splits a byte stream into lines on `\n` and `\r`. A segment that follows a
@@ -340,10 +349,30 @@ impl Dirs {
     }
 }
 
-/// Why a job may not start, if it may not.
-pub fn check(action: Action, app: &StoreApp, dirs: &Dirs) -> Result<(), String> {
+/// The helper's status for the UI glue (blocking: call on a worker thread).
+pub fn root_status() -> RootStatus {
+    platform::root_installer().status()
+}
+
+const NEEDS_SSH: &str = "needs root: run it over SSH";
+const NEEDS_PIN: &str = "needs the PIN";
+
+/// Why a root app can't use the helper, if it can't: no helper, no PIN set, or
+/// its id isn't on the helper's allowlist. The caller falls back to the SSH text.
+pub fn root_refusal(app: &StoreApp, status: &RootStatus) -> Option<String> {
+    if !status.available || !status.pin_set || !status.sets.contains_key(app.id()) {
+        return Some(NEEDS_SSH.into());
+    }
+    None
+}
+
+/// Why a job may not start, if it may not. `status` is the helper's status
+/// (`RootStatus::default()` = no helper); it is only looked at for root apps.
+pub fn check(action: Action, app: &StoreApp, dirs: &Dirs, status: &RootStatus) -> Result<(), String> {
     if app.root {
-        return Err("needs root: run it over SSH".into());
+        if let Some(why) = root_refusal(app, status) {
+            return Err(why);
+        }
     }
     let installed = registry::load(&dirs.registry).entries.iter().any(|e| e.id == app.id());
     match (action, installed) {
@@ -399,25 +428,46 @@ pub fn wait_for_exit(id: &str, pids: &[u32], timeout: Duration) -> bool {
 /// run. Otherwise `prepare` runs on the calling thread (storefeed closes the
 /// running app there), the worker waits for the PIDs it returns to exit (up to
 /// 8 s), then the steps run; events arrive on the worker thread through
-/// `on_event` and the last one is `Done` or `Failed`. The caller keeps the
-/// "one job at a time" guard.
+/// `on_event` and the last one is `Done`, `Failed`, `PinRejected` or `NoPin`.
+/// The caller keeps the "one job at a time" guard.
+///
+/// `status` is the helper's status as the caller already fetched it (on a
+/// worker thread): this call never touches the socket on the calling thread.
+/// The worker asks the helper again before running. `pin` is required for root
+/// apps and ignored otherwise; it moves into the worker and is dropped when the
+/// job ends.
 pub fn run_job(
     action: Action,
     app: StoreApp,
+    status: &RootStatus,
+    pin: Option<String>,
     prepare: impl FnOnce() -> Vec<u32>,
     on_event: impl Fn(JobEvent) + Send + 'static,
 ) -> Result<(), String> {
     let dirs = Dirs::default_dirs();
-    check(action, &app, &dirs)?;
+    check(action, &app, &dirs, status)?;
+    if app.root && pin.as_deref().is_none_or(str::is_empty) {
+        return Err(NEEDS_PIN.into());
+    }
     let wait = prepare();
     let src = source();
     std::thread::spawn(move || {
-        let _ = run_job_blocking(&dirs, &src, action, &app, &wait, Limits::DEFAULT, &on_event);
+        let helper = platform::root_installer();
+        let root = Root { helper: helper.as_ref(), pin: pin.as_deref() };
+        let _ = run_job_blocking(&dirs, &src, action, &app, &wait, Limits::DEFAULT, root, &on_event);
     });
     Ok(())
 }
 
+/// The helper and the PIN for a root job (the PIN is unused by user-level apps).
+#[derive(Clone, Copy)]
+pub struct Root<'a> {
+    pub helper: &'a dyn RootInstaller,
+    pub pin: Option<&'a str>,
+}
+
 /// The whole job on the current thread (what `run_job` runs, and what the tests call).
+#[allow(clippy::too_many_arguments)]
 pub fn run_job_blocking(
     dirs: &Dirs,
     source: &str,
@@ -425,13 +475,19 @@ pub fn run_job_blocking(
     app: &StoreApp,
     wait: &[u32],
     limits: Limits,
+    root: Root,
     on_event: &dyn Fn(JobEvent),
 ) -> Result<(), String> {
     let id = app.id();
     let verb = action.as_str();
-    if let Err(reason) = check(action, app, dirs) {
+    // Only root apps talk to the helper; everyone else never opens the socket.
+    let status = if app.root { root.helper.status() } else { RootStatus::default() };
+    if let Err(reason) = check(action, app, dirs, &status) {
         eprintln!("[store] refused {verb} {id}: {reason}");
         return Err(reason);
+    }
+    if app.root {
+        return run_root(dirs, source, action, app, wait, root, &status, on_event);
     }
     wait_for_exit(id, wait, EXIT_WAIT);
     let steps = match action {
@@ -466,8 +522,99 @@ pub fn run_job_blocking(
             Err(e) => return fail(k, -1, format!("Step {k} of {n} could not run: {e}"), &e),
         }
     }
-    let last_k = n.max(1);
-    let finish = match action {
+    if let Err(e) = commit(dirs, source, action, app) {
+        return fail(n.max(1), 0, commit_error(action, &e), &e.to_string());
+    }
+    eprintln!("[store] {verb} {id} ok");
+    on_event(JobEvent::Done);
+    Ok(())
+}
+
+/// A root app's job: exactly one helper call, no shell. What it installs comes
+/// from the helper's allowlist (`status`), never from the manifest; the
+/// `Step` event only describes that call for the progress view.
+#[allow(clippy::too_many_arguments)]
+fn run_root(
+    dirs: &Dirs,
+    source: &str,
+    action: Action,
+    app: &StoreApp,
+    wait: &[u32],
+    root: Root,
+    status: &RootStatus,
+    on_event: &dyn Fn(JobEvent),
+) -> Result<(), String> {
+    let id = app.id();
+    let verb = action.as_str();
+    let Some(pin) = root.pin.filter(|p| !p.is_empty()) else {
+        eprintln!("[store] refused {verb} {id}: no PIN given");
+        return Err(NEEDS_PIN.into());
+    };
+    let set = status.sets.get(id).cloned().unwrap_or_default(); // check() ensured it exists
+    wait_for_exit(id, wait, EXIT_WAIT);
+    let command = root_command(action, id, &set);
+    // The Step (and its log line) is announced only once the helper has accepted the PIN:
+    // before the first helper output, or after the call for outcomes other than a PIN refusal.
+    let announced = Cell::new(false);
+    let announce = || {
+        if !announced.replace(true) {
+            eprintln!("[store] {verb} {id}: {command}");
+            on_event(JobEvent::Step { k: 1, n: 1, command: command.clone() });
+        }
+    };
+    let fail = |code: i32, message: String, last: &str| {
+        eprintln!("[store] {verb} {id} FAILED (exit {code}): {last}");
+        on_event(JobEvent::Failed { k: 1, code, message });
+        Err("failed".to_string())
+    };
+    let reject = |tries_left: Option<u32>, locked_for_s: u32| {
+        eprintln!("[store] {verb} {id}: PIN rejected (locked for {locked_for_s} s)");
+        on_event(JobEvent::PinRejected { tries_left, locked_for_s });
+        Err("pin rejected".to_string())
+    };
+    let op = if action == Action::Install { RootOp::Install } else { RootOp::Remove };
+    // The helper's own steps (apt-get update, a simulation, the real run) show as lines.
+    let outcome = root.helper.run(op, id, pin, &|ev| {
+        announce();
+        match ev {
+            RootEvent::Line(t) | RootEvent::Step(t) => on_event(JobEvent::Line(t)),
+            RootEvent::Replace(t) => on_event(JobEvent::Replace(t)),
+        }
+    });
+    if !matches!(outcome, RootOutcome::BadPin { .. } | RootOutcome::Locked { .. } | RootOutcome::NoPin) {
+        announce();
+    }
+    match outcome {
+        RootOutcome::Done => {}
+        RootOutcome::BadPin { tries_left, locked_for_s } => return reject(tries_left, locked_for_s),
+        RootOutcome::Locked { locked_for_s } => return reject(None, locked_for_s),
+        RootOutcome::NoPin => {
+            eprintln!("[store] {verb} {id}: helper has no PIN");
+            on_event(JobEvent::NoPin);
+            return Err("no pin".into());
+        }
+        RootOutcome::Failed { code, message } => {
+            let tail = if message.is_empty() { String::new() } else { format!(": {message}") };
+            return fail(code, format!("Step 1 of 1 failed (exit {code}){tail}"), &message);
+        }
+        RootOutcome::NotAllowed(why) => return fail(-1, format!("Step 1 of 1 could not run: the helper refused it: {why}"), &why),
+        RootOutcome::Busy => return fail(-1, "Step 1 of 1 could not run: the helper is busy with another job".into(), "busy"),
+        RootOutcome::Error(why) => return fail(-1, format!("Step 1 of 1 could not run: {why}"), &why),
+        RootOutcome::Unavailable => return fail(-1, "Step 1 of 1 could not run: the helper is not available".into(), "unavailable"),
+    }
+    if let Err(e) = commit(dirs, source, action, app) {
+        return fail(0, commit_error(action, &e), &e.to_string());
+    }
+    eprintln!("[store] {verb} {id} ok");
+    on_event(JobEvent::Done);
+    Ok(())
+}
+
+/// After the steps passed: write (install) or remove (uninstall) the registry
+/// entry and the receipt. Install leaves neither behind if the second write fails.
+fn commit(dirs: &Dirs, source: &str, action: Action, app: &StoreApp) -> std::io::Result<()> {
+    let id = app.id();
+    match action {
         Action::Install => {
             let header = format!(
                 "Installed by the Lumen store from {source} on {}",
@@ -484,20 +631,32 @@ pub fn run_job_blocking(
             Ok(false) => Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("no {id}.toml to remove"))),
             Err(e) => Err(e),
         },
-    };
-    if let Err(e) = finish {
-        let what = if action == Action::Install { "write the app entry" } else { "remove the app entry" };
-        return fail(last_k, 0, format!("Steps passed but Lumen could not {what}: {e}"), &e.to_string());
     }
-    eprintln!("[store] {verb} {id} ok");
-    on_event(JobEvent::Done);
-    Ok(())
+}
+
+fn commit_error(action: Action, e: &std::io::Error) -> String {
+    let what = if action == Action::Install { "write the app entry" } else { "remove the app entry" };
+    format!("Steps passed but Lumen could not {what}: {e}")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StepEnd {
     Exit(i32),
     TimedOut,
+}
+
+/// The readable description of a root job's one step, from the helper's
+/// allowlist set (e.g. `lumen-helper: apt-get install -- sl`).
+pub fn root_command(action: Action, id: &str, set: &RootSet) -> String {
+    let (verb, pkgs) = match action {
+        Action::Install => ("install", &set.install),
+        Action::Uninstall => ("remove", &set.remove),
+    };
+    if pkgs.is_empty() {
+        format!("lumen-helper: nothing to {verb} for {id}")
+    } else {
+        format!("lumen-helper: apt-get {verb} -- {}", pkgs.join(" "))
+    }
 }
 
 /// SIGKILLs every process in the step's group (`sh` is its leader).
@@ -646,9 +805,9 @@ mod tests {
         let m = parse_manifest(MANIFEST);
         assert!(m.errors.is_empty(), "{:?}", m.errors);
         let ids: Vec<_> = m.apps.iter().map(|a| a.id()).collect();
-        assert_eq!(ids, ["jellyfin", "youtube", "airplay", "steamlink", "kolourpaint", "store-test"]);
+        assert_eq!(ids, ["jellyfin", "youtube", "airplay", "steamlink", "kodi", "kolourpaint", "store-test", "root-test"]);
         let by = |id: &str| m.apps.iter().find(|a| a.id() == id).unwrap();
-        assert!(by("steamlink").root && !by("kolourpaint").root);
+        assert!(by("steamlink").root && by("kodi").root && by("root-test").root && !by("kolourpaint").root);
         assert!(by("jellyfin").install.is_empty());
         // The manifest's shipped ids' registry fields match the shipped TOMLs.
         for (name, text) in registry::SHIPPED {
@@ -750,10 +909,65 @@ mod tests {
         parse_app(v).unwrap()
     }
 
+    /// A scripted helper: records every call, answers `status` and `run` as told.
+    struct FakeHelper {
+        status: RootStatus,
+        outcome: RootOutcome,
+        stream: Vec<RootEvent>,
+        calls: Mutex<Vec<(RootOp, String, String)>>,
+    }
+
+    impl FakeHelper {
+        fn new(status: RootStatus, outcome: RootOutcome) -> Self {
+            FakeHelper { status, outcome, stream: vec![], calls: Mutex::new(vec![]) }
+        }
+        fn calls(&self) -> Vec<(RootOp, String, String)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl RootInstaller for FakeHelper {
+        fn status(&self) -> RootStatus {
+            self.status.clone()
+        }
+        fn run(&self, op: RootOp, id: &str, pin: &str, on_event: &dyn Fn(RootEvent)) -> RootOutcome {
+            self.calls.lock().unwrap().push((op, id.into(), pin.into()));
+            for e in &self.stream {
+                on_event(e.clone());
+            }
+            self.outcome.clone()
+        }
+    }
+
+    fn ready(id: &str, install: &[&str], remove: &[&str]) -> RootStatus {
+        let set = platform::RootSet {
+            install: install.iter().map(|s| s.to_string()).collect(),
+            remove: remove.iter().map(|s| s.to_string()).collect(),
+        };
+        RootStatus { available: true, pin_set: true, locked_for_s: 0, sets: [(id.to_string(), set)].into(), note: None }
+    }
+
     fn run(dirs: &Dirs, action: Action, a: &StoreApp) -> (Result<(), String>, Vec<JobEvent>) {
+        let helper = FakeHelper::new(RootStatus::default(), RootOutcome::Unavailable);
+        run_with(dirs, action, a, &helper, None)
+    }
+
+    fn run_with(
+        dirs: &Dirs,
+        action: Action,
+        a: &StoreApp,
+        helper: &FakeHelper,
+        pin: Option<&str>,
+    ) -> (Result<(), String>, Vec<JobEvent>) {
         let log = Mutex::new(Vec::new());
-        let r = run_job_blocking(dirs, "test-source", action, a, &[], Limits::DEFAULT, &|e| log.lock().unwrap().push(e));
+        let r = run_job_blocking(dirs, "test-source", action, a, &[], Limits::DEFAULT, Root { helper, pin }, &|e| log.lock().unwrap().push(e));
         (r, log.into_inner().unwrap())
+    }
+
+    fn root_app(id: &str) -> StoreApp {
+        let mut a = app(id, &["touch /nonexistent-dir/should-not-run"], &["touch /nonexistent-dir/nor-this"]);
+        a.root = true;
+        a
     }
 
     fn files(dir: &Path) -> Vec<String> {
@@ -861,14 +1075,163 @@ mod tests {
         let _ = std::fs::remove_dir_all(dirs.registry.parent().unwrap());
     }
 
+    // Replaces `root_apps_never_run`: root apps now run only through the helper.
     #[test]
-    fn root_apps_never_run() {
-        let dirs = temp("root");
-        let mut a = app("r", &["touch /nonexistent-dir/should-not-run"], &[]);
-        a.root = true;
-        let (r, ev) = run(&dirs, Action::Install, &a);
-        assert!(r.unwrap_err().contains("root") && ev.is_empty());
-        assert!(files(&dirs.registry).is_empty());
+    fn root_app_refused_when_helper_unavailable_no_pin_or_not_allowlisted() {
+        let dirs = temp("rootrefuse");
+        let a = root_app("r");
+        let cases = [
+            ("unavailable", RootStatus::default()),
+            ("no pin", RootStatus { pin_set: false, ..ready("r", &["sl"], &["sl"]) }),
+            ("not allowlisted", ready("other", &["sl"], &["sl"])),
+        ];
+        for (name, status) in cases {
+            let helper = FakeHelper::new(status, RootOutcome::Done);
+            let (r, ev) = run_with(&dirs, Action::Install, &a, &helper, Some("1234"));
+            assert!(r.unwrap_err().contains("run it over SSH"), "{name}");
+            assert!(ev.is_empty() && helper.calls().is_empty(), "{name}");
+            assert!(files(&dirs.registry).is_empty() && files(&dirs.receipts).is_empty(), "{name}");
+        }
+    }
+
+    #[test]
+    fn root_check_is_pure_and_lists_the_rules() {
+        let dirs = temp("rootcheck");
+        let a = root_app("r");
+        assert!(check(Action::Install, &a, &dirs, &RootStatus::default()).is_err());
+        assert!(check(Action::Install, &a, &dirs, &ready("r", &["sl"], &[])).is_ok());
+        assert_eq!(root_refusal(&a, &RootStatus::default()).as_deref(), Some("needs root: run it over SSH"));
+        // Locked is not a refusal: the pad shows the countdown on submit.
+        let locked = RootStatus { locked_for_s: 30, ..ready("r", &["sl"], &[]) };
+        assert!(root_refusal(&a, &locked).is_none());
+    }
+
+    #[test]
+    fn root_app_needs_a_pin() {
+        let dirs = temp("rootnopin");
+        let helper = FakeHelper::new(ready("r", &["sl"], &["sl"]), RootOutcome::Done);
+        for pin in [None, Some("")] {
+            let (r, ev) = run_with(&dirs, Action::Install, &root_app("r"), &helper, pin);
+            assert_eq!(r.unwrap_err(), "needs the PIN");
+            assert!(ev.is_empty());
+        }
+        assert!(helper.calls().is_empty() && files(&dirs.registry).is_empty());
+    }
+
+    #[test]
+    fn root_install_done_writes_entry_and_receipt_with_one_helper_step() {
+        let dirs = temp("rootok");
+        let a = root_app("r");
+        let mut helper = FakeHelper::new(ready("r", &["sl", "extra"], &["sl"]), RootOutcome::Done);
+        helper.stream = vec![RootEvent::Step("apt-get update".into()), RootEvent::Line("Setting up sl".into()), RootEvent::Replace("90%".into())];
+        let (r, ev) = run_with(&dirs, Action::Install, &a, &helper, Some("4821"));
+        assert!(r.is_ok(), "{ev:?}");
+        assert_eq!(
+            ev,
+            vec![
+                JobEvent::Step { k: 1, n: 1, command: "lumen-helper: apt-get install -- sl extra".into() },
+                JobEvent::Line("apt-get update".into()),
+                JobEvent::Line("Setting up sl".into()),
+                JobEvent::Replace("90%".into()),
+                JobEvent::Done,
+            ]
+        );
+        assert_eq!(helper.calls(), vec![(RootOp::Install, "r".to_string(), "4821".to_string())]);
+        assert_eq!(registry::load(&dirs.registry).entries, vec![a.entry.clone()]);
+        assert_eq!(read_receipt(&dirs.receipts, "r").unwrap(), a);
+
+        // Uninstall: one helper step from the allowlist's `remove`, then entry + receipt go.
+        let (r, ev) = run_with(&dirs, Action::Uninstall, &a, &helper, Some("4821"));
+        assert!(r.is_ok(), "{ev:?}");
+        assert!(ev.contains(&JobEvent::Step { k: 1, n: 1, command: "lumen-helper: apt-get remove -- sl".into() }));
+        assert_eq!(helper.calls()[1], (RootOp::Remove, "r".to_string(), "4821".to_string()));
+        assert!(files(&dirs.registry).is_empty() && files(&dirs.receipts).is_empty());
+        let _ = std::fs::remove_dir_all(dirs.registry.parent().unwrap());
+    }
+
+    #[test]
+    fn root_pin_rejection_writes_nothing() {
+        let dirs = temp("rootbad");
+        let a = root_app("r");
+        let st = ready("r", &["sl"], &["sl"]);
+        let helper = FakeHelper::new(st.clone(), RootOutcome::BadPin { tries_left: Some(3), locked_for_s: 0 });
+        let (r, ev) = run_with(&dirs, Action::Install, &a, &helper, Some("0000"));
+        assert!(r.is_err());
+        assert_eq!(ev.last(), Some(&JobEvent::PinRejected { tries_left: Some(3), locked_for_s: 0 }));
+        assert!(!ev.contains(&JobEvent::Done));
+        assert!(!ev.iter().any(|e| matches!(e, JobEvent::Step { .. })), "{ev:?}");
+        assert!(files(&dirs.registry).is_empty() && files(&dirs.receipts).is_empty());
+
+        let helper = FakeHelper::new(st.clone(), RootOutcome::Locked { locked_for_s: 55 });
+        let (_, ev) = run_with(&dirs, Action::Install, &a, &helper, Some("0000"));
+        assert_eq!(ev.last(), Some(&JobEvent::PinRejected { tries_left: None, locked_for_s: 55 }));
+        assert!(!ev.iter().any(|e| matches!(e, JobEvent::Step { .. })), "{ev:?}");
+
+        let helper = FakeHelper::new(st, RootOutcome::NoPin);
+        let (_, ev) = run_with(&dirs, Action::Install, &a, &helper, Some("0000"));
+        assert_eq!(ev.last(), Some(&JobEvent::NoPin));
+        assert!(!ev.iter().any(|e| matches!(e, JobEvent::Step { .. })), "{ev:?}");
+        assert!(files(&dirs.registry).is_empty() && files(&dirs.receipts).is_empty());
+    }
+
+    #[test]
+    fn root_pin_rejection_on_uninstall_keeps_the_entry() {
+        let dirs = temp("rootbadun");
+        let a = root_app("r");
+        let st = ready("r", &["sl"], &["sl"]);
+        let ok = FakeHelper::new(st.clone(), RootOutcome::Done);
+        assert!(run_with(&dirs, Action::Install, &a, &ok, Some("1234")).0.is_ok());
+        let bad = FakeHelper::new(st, RootOutcome::BadPin { tries_left: Some(2), locked_for_s: 0 });
+        assert!(run_with(&dirs, Action::Uninstall, &a, &bad, Some("0000")).0.is_err());
+        assert!(dirs.registry.join("r.toml").exists() && dirs.receipts.join("r.json").exists());
+        let _ = std::fs::remove_dir_all(dirs.registry.parent().unwrap());
+    }
+
+    #[test]
+    fn root_failures_write_nothing() {
+        let dirs = temp("rootfail");
+        let a = root_app("r");
+        let st = ready("r", &["sl"], &["sl"]);
+        let helper = FakeHelper::new(st.clone(), RootOutcome::Failed { code: 100, message: "E: no such package".into() });
+        let (r, ev) = run_with(&dirs, Action::Install, &a, &helper, Some("1234"));
+        assert!(r.is_err());
+        match ev.last() {
+            Some(JobEvent::Failed { k: 1, code: 100, message }) => assert!(message.contains("E: no such package"), "{message}"),
+            other => panic!("{other:?}"),
+        }
+        for outcome in [RootOutcome::Busy, RootOutcome::NotAllowed("x".into()), RootOutcome::Error("e".into()), RootOutcome::Unavailable] {
+            let helper = FakeHelper::new(st.clone(), outcome);
+            let (_, ev) = run_with(&dirs, Action::Install, &a, &helper, Some("1234"));
+            assert!(matches!(ev.last(), Some(JobEvent::Failed { k: 1, code: -1, .. })), "{ev:?}");
+            assert!(matches!(ev.first(), Some(JobEvent::Step { k: 1, n: 1, .. })), "{ev:?}");
+        }
+        assert!(files(&dirs.registry).is_empty() && files(&dirs.receipts).is_empty());
+    }
+
+    #[test]
+    fn hand_installed_root_app_without_a_receipt_uninstalls_through_the_helper() {
+        // pitv's existing kodi.toml: a registry entry, no receipt.
+        let dirs = temp("rootbyhand");
+        let a = root_app("kodi");
+        registry::write_entry(&dirs.registry, &a.entry, "by hand").unwrap();
+        assert!(files(&dirs.receipts).is_empty());
+        // The manifest's SSH strings must not run; the helper's `remove` set is used.
+        let helper = FakeHelper::new(ready("kodi", &["kodi", "libretro-mgba"], &["kodi"]), RootOutcome::Done);
+        let (r, ev) = run_with(&dirs, Action::Uninstall, &a, &helper, Some("1234"));
+        assert!(r.is_ok(), "{ev:?}");
+        assert_eq!(helper.calls(), vec![(RootOp::Remove, "kodi".to_string(), "1234".to_string())]);
+        assert!(ev.contains(&JobEvent::Step { k: 1, n: 1, command: "lumen-helper: apt-get remove -- kodi".into() }));
+        assert_eq!(ev.last(), Some(&JobEvent::Done));
+        assert!(files(&dirs.registry).is_empty(), "the TOML is removed");
+        assert_eq!(run_with(&dirs, Action::Uninstall, &a, &helper, Some("1234")).0.unwrap_err(), "not installed");
+        let _ = std::fs::remove_dir_all(dirs.registry.parent().unwrap());
+    }
+
+    #[test]
+    fn root_command_text() {
+        let set = platform::RootSet { install: vec!["x".into(), "y".into()], remove: vec![] };
+        assert_eq!(root_command(Action::Install, "a", &set), "lumen-helper: apt-get install -- x y");
+        assert_eq!(root_command(Action::Uninstall, "a", &set), "lumen-helper: nothing to remove for a");
     }
 
     #[test]
@@ -913,7 +1276,8 @@ mod tests {
         let limits = Limits { timeout: Duration::from_millis(300), grace: Duration::from_millis(200) };
         let log = Mutex::new(Vec::new());
         let t = Instant::now();
-        let r = run_job_blocking(&dirs, "s", Action::Install, &a, &[], limits, &|e| log.lock().unwrap().push(e));
+        let helper = FakeHelper::new(RootStatus::default(), RootOutcome::Unavailable);
+        let r = run_job_blocking(&dirs, "s", Action::Install, &a, &[], limits, Root { helper: &helper, pin: None }, &|e| log.lock().unwrap().push(e));
         let ev = log.into_inner().unwrap();
         assert!(r.is_err() && t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
         match ev.last() {
@@ -992,8 +1356,13 @@ mod tests {
         let path = p.to_string_lossy().into_owned();
         assert_eq!(fetch(&path).unwrap(), MANIFEST);
         assert_eq!(fetch(&format!("file://{path}")).unwrap(), MANIFEST);
-        assert_eq!(load_manifest(&path).unwrap().apps.len(), 6);
+        assert_eq!(load_manifest(&path).unwrap().apps.len(), 8);
         assert!(fetch("/nonexistent/manifest.json").is_err());
+        // A bare relative path (no scheme) is a local file too, not a curl URL.
+        let rel = std::env::current_dir().unwrap().join("Cargo.toml");
+        let cwd_rel = fetch("Cargo.toml").unwrap();
+        assert_eq!(cwd_rel, std::fs::read_to_string(rel).unwrap());
+        assert!(fetch("no/such/manifest.json").unwrap_err().contains("can't read"));
         assert!(load_manifest("/nonexistent/manifest.json").is_err());
         let _ = std::fs::remove_dir_all(dirs.registry.parent().unwrap());
     }
@@ -1053,5 +1422,117 @@ mod tests {
         assert!(r.is_ok(), "{ev:?}");
         assert!(ev.contains(&JobEvent::Line("from-manifest".into())));
         let _ = std::fs::remove_dir_all(dirs.registry.parent().unwrap());
+    }
+
+    #[test]
+    fn the_pin_never_appears_in_job_events() {
+        let st = ready("r", &["sl"], &["sl"]);
+        let outcomes = [
+            RootOutcome::Done,
+            RootOutcome::BadPin { tries_left: Some(1), locked_for_s: 0 },
+            RootOutcome::Locked { locked_for_s: 9 },
+            RootOutcome::NoPin,
+            RootOutcome::Failed { code: 100, message: "E: boom".into() },
+            RootOutcome::NotAllowed("nope".into()),
+            RootOutcome::Busy,
+            RootOutcome::Error("e".into()),
+            RootOutcome::Unavailable,
+        ];
+        for (i, outcome) in outcomes.into_iter().enumerate() {
+            let dirs = temp(&format!("pinleak{i}"));
+            let helper = FakeHelper::new(st.clone(), outcome);
+            let (_, ev) = run_with(&dirs, Action::Install, &root_app("r"), &helper, Some("73519"));
+            assert!(!format!("{ev:?}").contains("73519"), "{ev:?}");
+            let on_disk: String = files(&dirs.registry).into_iter().chain(files(&dirs.receipts)).collect();
+            assert!(!on_disk.contains("73519"));
+            let _ = std::fs::remove_dir_all(dirs.registry.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn root_job_never_runs_the_manifests_shell_steps_or_names_its_packages() {
+        // The manifest's steps would create this file if run; the helper's set is what is shown and used.
+        let dirs = temp("rootnoshell");
+        let marker = dirs.registry.parent().unwrap().join("ran");
+        let mut a = app("r", &[&format!("mkdir -p {0} && touch {0}/m", marker.display())], &[&format!("touch {}", marker.display())]);
+        a.root = true;
+        let helper = FakeHelper::new(ready("r", &["from-helper"], &["from-helper"]), RootOutcome::Done);
+        let (r, ev) = run_with(&dirs, Action::Install, &a, &helper, Some("1234"));
+        assert!(r.is_ok(), "{ev:?}");
+        let (r, ev2) = run_with(&dirs, Action::Uninstall, &a, &helper, Some("1234"));
+        assert!(r.is_ok(), "{ev2:?}");
+        assert!(!marker.exists());
+        for e in ev.iter().chain(&ev2) {
+            if let JobEvent::Step { n, command, .. } = e {
+                assert_eq!(*n, 1);
+                assert!(command.contains("from-helper") && !command.contains("touch"), "{command}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(dirs.registry.parent().unwrap());
+    }
+
+    #[test]
+    fn root_job_with_an_id_dropped_from_the_status_after_check_still_calls_the_helper_not_a_shell() {
+        // run_root looks the set up with unwrap_or_default, but the helper stays the gate.
+        let dirs = temp("rootdrop");
+        let helper = FakeHelper::new(RootStatus::default(), RootOutcome::NotAllowed("app id is not on the allowlist".into()));
+        let r = run_job_blocking(&dirs, "s", Action::Install, &root_app("r"), &[], Limits::DEFAULT, Root { helper: &helper, pin: Some("1234") }, &|_| {});
+        assert!(r.is_err());
+        assert!(files(&dirs.registry).is_empty() && files(&dirs.receipts).is_empty());
+    }
+
+    #[test]
+    fn root_job_refuses_an_install_of_an_already_installed_app_without_asking_the_helper() {
+        let dirs = temp("rootdup");
+        let a = root_app("r");
+        let helper = FakeHelper::new(ready("r", &["sl"], &["sl"]), RootOutcome::Done);
+        assert!(run_with(&dirs, Action::Install, &a, &helper, Some("1234")).0.is_ok());
+        let (r, ev) = run_with(&dirs, Action::Install, &a, &helper, Some("1234"));
+        assert_eq!(r.unwrap_err(), "already installed");
+        assert!(ev.is_empty());
+        assert_eq!(helper.calls().len(), 1, "a refused job must not burn a PIN guess");
+        let _ = std::fs::remove_dir_all(dirs.registry.parent().unwrap());
+    }
+
+    #[test]
+    fn root_commit_failure_after_the_helper_succeeded_is_reported_and_keeps_nothing() {
+        // apt changed the system but Lumen could not write its entry: failed, no half state.
+        let dirs = temp("rootcommit");
+        let base = dirs.registry.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(&dirs.registry, "a file where the apps dir should be").unwrap();
+        let helper = FakeHelper::new(ready("r", &["sl"], &["sl"]), RootOutcome::Done);
+        let (r, ev) = run_with(&dirs, Action::Install, &root_app("r"), &helper, Some("1234"));
+        assert!(r.is_err());
+        assert!(matches!(ev.last(), Some(JobEvent::Failed { k: 1, code: 0, message }) if message.contains("could not write the app entry")), "{ev:?}");
+        assert!(!dirs.receipts.join("r.json").exists());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn root_refusal_needs_all_three_conditions() {
+        let a = root_app("r");
+        let good = ready("r", &["sl"], &["sl"]);
+        assert!(root_refusal(&a, &good).is_none());
+        for bad in [
+            RootStatus { available: false, ..good.clone() },
+            RootStatus { pin_set: false, ..good.clone() },
+            RootStatus { sets: Default::default(), ..good.clone() },
+        ] {
+            assert!(root_refusal(&a, &bad).is_some());
+        }
+    }
+
+    #[test]
+    fn shipped_manifest_root_apps_and_helper_allowlist_name_the_same_ids() {
+        // A root app missing from the allowlist would only ever show the SSH text; an allowlist
+        // set with no root manifest app is root-installable power nothing in the Store offers.
+        let m = parse_manifest(MANIFEST);
+        let mut root_ids: Vec<_> = m.apps.iter().filter(|a| a.root).map(|a| a.id().to_string()).collect();
+        root_ids.sort();
+        let al: toml::Table = include_str!("../session/helper-allowlist.toml").parse().unwrap();
+        let mut set_ids: Vec<_> = al.keys().cloned().collect();
+        set_ids.sort();
+        assert_eq!(root_ids, set_ids);
     }
 }

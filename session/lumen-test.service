@@ -1,6 +1,7 @@
-# M1-M4 test session: labwc with Lumen as its only client, on tty1 in place of Kodi.
-# When Lumen exits, labwc exits (-S) and Kodi starts again, so the TV is never
-# left on a black screen. M5 replaces this with the real boot session.
+# Manual test session: labwc with Lumen as its only client, on tty1 in place of
+# lumen.service (start it to test, e.g. a build run by hand). When it exits,
+# ExecStopPost starts lumen.service again, so the TV is never left on a black
+# screen.
 [Unit]
 Description=Lumen test session (labwc)
 After=systemd-user-sessions.service network-online.target sound.target bluetooth.target
@@ -19,5 +20,8 @@ StandardError=journal
 # Optional overrides without sudo (LUMEN_BENCH=1, LUMEN_MODE, SLINT_*).
 EnvironmentFile=-/home/laith/.config/lumen-tv/env
 ExecStart=/usr/bin/labwc -C /home/laith/lumen-tv/session/labwc -S /home/laith/lumen-tv/session/start-lumen.sh
-# "+" runs this as root, so it can start Kodi again whenever Lumen exits
-ExecStopPost=+/usr/bin/systemctl start --no-block kodi.service
+# "+" runs this as root, so it can start the boot session again whenever this
+# one exits. It also runs when lumen.service's own start stops this unit through
+# Conflicts= (harmless, lumen.service is already starting), and at shutdown
+# systemd refuses the start job (harmless).
+ExecStopPost=+/usr/bin/systemctl start --no-block lumen.service

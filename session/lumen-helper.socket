@@ -1,0 +1,15 @@
+# Socket activation for the root install helper: nothing root runs while idle.
+# Lumen (user laith, in group lumen-helper) connects here; systemd starts
+# lumen-helper.service on the first connection.
+[Unit]
+Description=Lumen root install helper socket
+
+[Socket]
+ListenStream=/run/lumen-helper.sock
+SocketUser=root
+# Only members of this group (laith, added by install.sh --helper) can connect.
+SocketGroup=lumen-helper
+SocketMode=0660
+
+[Install]
+WantedBy=sockets.target

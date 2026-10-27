@@ -246,3 +246,152 @@ Open: pitv clippy needs `rustup component add clippy` on the Pi before it can ga
 ## M5.1 TV checklist (2026-10-25, all pass)
 Y1-Y7 pass (Laith; codec avc1; YouTube PID 1527 kept through 8 Home round trips). Y8 Home bench with YouTube in the background: motion 60 fps / 0% slow, idle 60.1 / 0.6%. A1-A2 pass (iPhone 17 connected, video window app_id `uxplay` fullscreen, sound). A3: longest logged mirror 4 min 4 s, accepted by Laith as smooth. A4 phone stop 11:51:37 → Home 11:51:43 (6 s). A5 red mid-mirror 11:50:40 and PS mid-mirror 11:57:58, both close in 1 s, no uxplay left. A6 no client 11:51:48 → gave up 11:53:49 (121 s). A7 uxplay.service/kodi.service never active. Pi 66-72 °C during the test.
 Pre-TV Pi checks: V1 packages (uxplay 1.71.1, plugins bad/good/libav, python3-gi, GTK 3, avahi active, nothing to install); V2 Store manifest 6 apps / 0 errors; V3 waylandsink has `fullscreen` (read from the .so; no Gst gir on the Pi); V4 wrapper compiles + executable; V5 headless Chromium with UA candidate A gets "YouTube on TV" (leanback `ytlr-*`) and the extension's `data-lumen-cap="1"` (so `--load-extension` works on Chromium 155; without the UA the page is empty); V6 `youtube.toml`, `airplay.toml`, `.shipped` seeded, 0 registry errors. Pi clippy not run (no clippy component on pitv; Mac clippy clean).
+
+
+## M5.3 Kodi inventory (2026-10-25, Job 1.4, read-only)
+
+### Commands run (all read-only via `ssh pitv`, no sudo)
+`dpkg -l | grep`, `apt-mark showmanual`, `dpkg-query -W`, `apt-cache depends/rdepends --installed`, `apt-get -s remove` (simulation, 3 variants), `systemctl is-enabled/is-active/cat/list-dependencies`, `ls`/`grep -l` on /etc/systemd/system and /etc/sudoers.d, `du -sh`, `find` (saves), `ls -la`, `cat ~/.local/bin/kodi-tile`. Plus local reads of Pi-tv/CLAUDE.md, config/, lumen-tv/config/apps, session/. Nothing was started, stopped, killed, written or deleted.
+
+### 1. Packages
+Installed (dpkg): kodi, kodi-bin, kodi-data, kodi-repository-kodi (all 3:21.3+dfsg-1+rpt3), kodi-game-libretro 21.0.7-1, kodi-inputstream-adaptive 21.5.9+ds-1, kodi-visualization-spectrum 21.0.2+ds-1, libretro-desmume 0.9.11+git20160819, libretro-gambatte 0.5.0+git20160522, libretro-mgba 0.10.5, steamlink 1.0.16, uxplay 1.71.1-1, gstreamer1.0-{alsa,gl,libav,plugins-bad,plugins-base,plugins-good,x} 1.26.2.
+
+apt-mark showmanual: gstreamer1.0-alsa, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-good, kodi, kodi-game-libretro, kodi-inputstream-adaptive, libretro-desmume, libretro-gambatte, libretro-mgba, steamlink, uxplay.
+
+| Group | Packages | Evidence |
+|---|---|---|
+| (a) Kodi's own, manual | kodi, kodi-game-libretro, kodi-inputstream-adaptive | kodi Depends kodi-bin, kodi-data; Recommends kodi-repository-kodi, kodi-visualization-spectrum. The other two have no rdepends. |
+| (a) Kodi's own, auto (stay unless Laith autoremoves) | kodi-bin, kodi-data, kodi-repository-kodi, kodi-visualization-spectrum, ~40 libs | listed by apt as "no longer required" |
+| (b) Kodi-only but generic | libretro-mgba, libretro-gambatte, libretro-desmume | symlinked from ~/.kodi/addons/game.libretro.*; mgba Depends `retroarch \| libretro-frontend` |
+| (c) Shared | uxplay (Lumen AirPlay tile), gstreamer1.0-*, steamlink | no Kodi dependency |
+
+### 2. Proposed `[kodi]` allowlist
+- install: kodi, kodi-game-libretro, kodi-inputstream-adaptive, libretro-mgba, libretro-gambatte, libretro-desmume
+- remove (recommended): the same six (see gotcha)
+- remove (job-literal): kodi, kodi-game-libretro, kodi-inputstream-adaptive. Not viable as-is: it pulls in RetroArch + Qt5.
+- Allowlist comment: apt `remove` keeps ~/.kodi and ~/roms (no purge, no autoremove).
+
+### `apt-get -s remove -- kodi kodi-game-libretro kodi-inputstream-adaptive` (verbatim, lists only)
+```
+The following packages were automatically installed and are no longer required:
+  kodi-bin kodi-data kodi-repository-kodi libavdevice61 libcdio-cdda2t64
+  libcdio-paranoia2t64 libcdio19t64 libcec7 libcrossguid0 libdate-tz3
+  libfstrcmp0 libimagequant0 libiso9660-12 libjs-iscroll libjs-jquery
+  libkissfft-float131 libldb2 liblirc-client0t64 liblmdb0 libmariadb3
+  libmicrohttpd12t64 libnfs14 libp8-platform2 libraqm0 libshairplay0
+  libsmbclient0 libspdlog1.15 libtdb1 libtevent0t64 libtinyxml2-11
+  libva-wayland2 libwayland-client++1 libwayland-cursor++1 libwayland-egl++1
+  libwebm1 mariadb-common mysql-common python3-olefile python3-pil samba-libs
+Use 'apt autoremove' to remove them.
+The following additional packages will be installed:
+  fonts-noto-extra gamemode-daemon libgamemode0 libqt5core5t64 libqt5dbus5t64
+  libqt5gui5t64 libqt5network5t64 libqt5qml5 libqt5qmlmodels5 libqt5quick5
+  libqt5svg5 libqt5waylandclient5 libqt5waylandcompositor5 libqt5widgets5t64
+  libretro-core-info pkexec qt5-gtk-platformtheme qttranslations5-l10n
+  qtwayland5 retroarch retroarch-assets
+The following packages will be REMOVED:
+  kodi kodi-game-libretro kodi-inputstream-adaptive
+  kodi-visualization-spectrum
+0 upgraded, 21 newly installed, 4 to remove and 0 not upgraded.
+```
+kodi-visualization-spectrum goes because it depends on kodi's API (auto-installed).
+
+### Simulation with the 3 cores added (recommended)
+`apt-get -s remove -- kodi kodi-game-libretro kodi-inputstream-adaptive libretro-mgba libretro-gambatte libretro-desmume`
+Result: `0 upgraded, 0 newly installed, 7 to remove` (kodi-visualization-spectrum, the three cores, kodi-game-libretro, kodi-inputstream-adaptive, kodi). Nothing shared is removed.
+
+### 3. Units, boot, autologin
+| Unit | enabled | active |
+|---|---|---|
+| kodi | disabled | inactive |
+| steamlink | static | inactive |
+| uxplay | static | inactive |
+| lumen | enabled (multi-user.target.wants) | active |
+| lumen-test | static | inactive |
+| getty@tty1 | enabled (getty.target.wants) | inactive |
+| autovt@tty1 | enabled | inactive |
+
+`systemctl cat getty@tty1` shows only the stock /usr/lib/systemd/system/getty@.service (`agetty -o '-- \u' --noreset --noclear - ${TERM}`). Neither /etc/systemd/system/getty@tty1.service.d nor getty@.service.d exists. **No autologin.**
+
+Boot without lumen: getty.target pulls getty@tty1, so a disabled lumen leaves a plain login prompt. With Lumen enabled, `OnFailure=kodi.service` sends a failed Lumen to Kodi (kodi.service Conflicts= getty@tty1), not to a shell. Once Kodi is gone that rescue is dead (the M6 rescue-to-getty change), and `install.sh --revert` (`systemctl enable kodi.service`) fails.
+
+`grep -l kodi` hits: kodi.service, lumen.service, lumen-test.service, steamlink.service, uxplay.service. sudoers.d (010_at-export, 010_dpkg-threads, 010_global-tty, 010_proxy, lumen, README, steamlink, uxplay) is root 0440 and unreadable without root; contents of steamlink/uxplay are known from the repo.
+
+### 4. Steam Link
+Lumen tile `config/apps/steamlink.toml`: `launch = "steamlink"`, process `~/.local/share/SteamLink/bin/shell`. The `steamlink` package has no Kodi dependency. Kodi-era `steamlink.service` is the only link to Kodi (ExecStopPost starts it).
+
+### 5. Data (sizes only)
+~/.kodi 240M (addons 203M, userdata/Thumbnails 26M, temp 120K); ~/.kodi-tile 132K (symlinks to ~/.kodi: addons, media, saves, system, userdata/*); ~/.kodi-backup-20261013 238M; ~/roms 1.1G; ~/.local/share/SteamLink 130M.
+ROMs: gb/Pokemon Yellow; gba/Pokemon Emerald; nds/Black, Black 2, Platinum, SoulSilver.
+
+### Saves location
+- `~/.kodi/saves/<ROM filename>/`: in-game saves (only `Pokemon - Platinum Version (USA).nds/`, empty)
+- `~/.kodi/userdata/Savestates/game.libretro.desmume/`: save states (empty)
+- `~/.kodi/userdata/addon_data/game.libretro.desmume/save/`: add-on save dir (empty)
+- `gamesgeneral.enableautosave` = true. gambatte and mgba have no save folders yet.
+No .sav/.srm/.dsv/.state file exists anywhere (`find / -xdev`). The paths come from directories Kodi created on first play, not from a written save. Nothing to import into RetroArch today. Back up ~/.kodi/saves and userdata/Savestates before any Kodi cleanup.
+
+### 6. Dead-file table (K5; proposals only, nothing removed)
+| File | Used by | Lumen-side use? | Recommendation |
+|---|---|---|---|
+| /etc/systemd/system/kodi.service (repo config/kodi.service) | old boot session; lumen.service OnFailure; `--revert` | yes, as rescue until M6 | Keep until the rescue becomes getty; then remove |
+| /etc/systemd/system/steamlink.service (config/) | Kodi favourite "Steam Link"; ExecStopPost starts Kodi | no (Lumen runs `steamlink` directly) | Remove; then drop it from lumen.service Conflicts= |
+| /etc/systemd/system/uxplay.service (config/) | Kodi favourite "Screen Mirror" | no (Lumen has `session/lumen-airplay`) | Remove |
+| /etc/sudoers.d/steamlink, uxplay (config/sudoers-*) | the two start scripts | no | Remove after the units |
+| ~/.local/bin/start-steamlink.sh, start-mirror.sh (config/) | Kodi favourites | no | Remove |
+| ~/.local/bin/airplay-mirror (config/) | uxplay.service | no | Remove |
+| ~/.local/bin/kodi-tile (lumen-tv/config/kodi-tile) | Lumen's Kodi tile (`config/apps/kodi.toml`) | yes, until Kodi is uninstalled | Keep until M5.3 test passes |
+| ~/.config/lumen-tv/apps/kodi.toml, kodi.toml.bak | Lumen registry | yes | Leave to M5.3 Store logic; .bak is stale |
+| config/favourites.xml, sources.xml, skinshortcuts-mainmenu.DATA.xml | Kodi | no | Keep as reinstall references (K5) |
+| config/kodi-games/ | Kodi RetroPlayer add-ons | no | Keep (reinstall reference) |
+| ~/.kodi, ~/.kodi-tile, ~/.kodi-backup-20261013, ~/roms, saves | Kodi data | tile links into ~/.kodi | NEVER touch |
+| config/nftables.conf, wireplumber-51-pitv-hdmi.conf | firewall / audio | yes | Keep |
+
+### Removal commands for Laith (not run; after the M5.3 TV test and his approval)
+```
+sudo rm /etc/systemd/system/steamlink.service /etc/systemd/system/uxplay.service
+sudo rm /etc/sudoers.d/steamlink /etc/sudoers.d/uxplay
+sudo systemctl daemon-reload
+sudo visudo -c
+rm ~/.local/bin/start-steamlink.sh ~/.local/bin/start-mirror.sh ~/.local/bin/airplay-mirror ~/.local/bin/kodi-tile
+# later, once Kodi is gone and the rescue is getty:
+sudo rm /etc/systemd/system/kodi.service && sudo systemctl daemon-reload
+```
+Repo-side equivalents (config/steamlink.service, uxplay.service, sudoers-*, start-*.sh, airplay-mirror) go in a follow-up job after approval.
+
+
+## M5.3 Phase 2 security review (2026-10-25, Job 2.0a; all items fixed the same day)
+**M5.3 review** (Job 2.0a, Phase 1; all HIGH/MEDIUM/LOW items fixed 2026-10-25, now helper 25 + 9, lumen-tv 324 pass; `cargo test --workspace` 320 + helper 23 + 7 pass on the Mac)
+Summary: the core guarantees hold. Packages come only from the root-owned allowlist, which is re-read and permission-checked per request. Names are validated (no leading `-`) and always follow `--`. The env is cleared, no shell runs, the PIN never reaches a reply or log (serde errors are classified), the lockout is persisted and mutex-serialised, and store.rs never runs a manifest string for a root app. The issues are apt doing more than the allowlist says, one wedge, and UI-thread blocking. Verdict: **Patch and ship**. Fix HIGH/MEDIUM before Phase 3 closes.
+- **HIGH (1.1) `helper/src/apt.rs:26` `args()`: `-y` lets apt go beyond the allowlist.** `remove` can install packages (the inventory's retroarch + Qt case, 21 pkgs) or cascade-remove reverse deps, and `install` can remove conflicting packages. D7/Gate 8 ("removes exactly the listed packages") is not enforced. Fix: add `--no-remove` to install. Before a remove, run the same argv with `-s` and refuse (`failed`) if the simulation has any `Inst ` line or a `Remv <pkg>` not in the entry's `remove`. Add a fake-apt test for both. Consequence: `[kodi]` remove must list `kodi-visualization-spectrum` (removed as a dependent) plus the 3 cores (gotcha above).
+- **MEDIUM (1.1) `helper/src/server.rs:125-143` `handle()`: no write timeout.** A client that sends a valid request and stops reading blocks `writeln!` inside the apt loop. The apt pipe then fills and apt stalls. The 15-min kill is never reached (it is checked in the same loop), `busy` never clears and the daemon never idles. Fix: `stream.set_write_timeout(Some(10 s))`; the existing `broken` flag then drops output and apt finishes.
+- **MEDIUM (1.1) `apt.rs:19` COMMON: dpkg conffile prompts fail.** With stdin `/dev/null` they fail with "end of file on stdin at conffile prompt". This bites reinstalling Kodi after `remove` (conffiles kept) and any upgrade. Fix: add `-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold` and update the argv tests and the plan's apt shape.
+- **MEDIUM (1.2) `src/store.rs:441` `run_job`: blocking `helper.status()` on the UI thread.** `storefeed::run` calls it for every root app; it can block up to 3 s on read, connect has no timeout at all (spec: 3 s), and status is fetched again in `run_job_blocking`. Fix: pass the status storefeed already fetched on its worker (`run_job(.., status: Option<&RootStatus>)`) for the sync check, and keep the worker-side re-check.
+- **MEDIUM (1.2) structural, `store.rs:487-547`: the root path is a conditional inside the user-step loop.** The display text `root_command()` sits in the same `steps` Vec that `run_step` hands to `sh -c`. Only the `if let Some(pin) … continue` ordering keeps it from being executed. Fix: split out `run_root(helper, op, id, pin, on_event)`, return before the loop, share the entry/receipt tail as `finish()`. Also forward the helper's real `Step` events as lines (today they are dropped, so the screen omits the `apt-get update` step).
+- **LOW (1.2) flaky `installer.rs:213` `stale_socket_file_is_unavailable`.** Reproduced: 2/8 failures with `cargo test -p lumen-tv -- store:: installer::`, 0/12 with `installer::` alone. Cause: on macOS std sets FD_CLOEXEC after `socket()` (non-atomic). A store test spawning `sh` in that window inherits the listener, so after `drop()` it still listens: connect succeeds, the 3 s read times out, and `note` is Some. Linux uses atomic SOCK_CLOEXEC, so it is not a product bug. Fix: assert `note.is_none()` only `#[cfg(target_os = "linux")]` (always assert `!available`), with a comment.
+- **LOW (1.1) `main.rs:63`: fd 3 from systemd has no FD_CLOEXEC.** apt, dpkg and every maintainer script inherit the listening socket. Fix: `libc::fcntl(3, F_SETFD, FD_CLOEXEC)` after the LISTEN_FDS check.
+- **LOW (1.1) `proto.rs:51` + `server.rs:147`: unvalidated client `id` is logged with `{}`.** Newlines or a 4 KiB id forge journal lines. Fix: `allowlist::valid_id` in `parse_request`, and log `{:?}`.
+- **LOW (1.2) `installer.rs:146`: status reasons are lost.** A `not_allowed`/`error` status (unsafe allowlist, bad attempts file) becomes "unexpected reply". EACCES (Lumen started before joining `lumen-helper`) gets a raw note. Fix: map both into `note`, with EACCES → "restart Lumen to pick up the lumen-helper group" (for 3.1's mode 2 text).
+- **LOW (1.1) hardening bundle.** Reject `--apt/--allowlist/--state-dir/--socket` outside `--insecure-test-mode`. Clamp a far-future `locked_until` on load (`pin.rs:49`; Pi 5 has no RTC battery, and a backward clock jump keeps it locked beyond 1 h while replying ≤ 3600). The PIN file is `pin.hash`, but MILESTONES/Gate 6 say `/var/lib/lumen-helper/pin`: align one.
+- FYI: `ui/pinpad.slint` compiles. It was imported into a scratch slint-build 1.18.1 crate with no warnings, `ui/app.slint` untouched. The `⌫` glyph needs a system font that has U+232B on pitv; check at the TV, with "Del" as the fallback. A 4-digit PIN allows about 24 guesses/day once at the 1 h cap, so ~200 days on average for a laith-level attacker (D6); suggest 6 digits. The storefeed `None` PIN stub is 3.1's.
+
+
+## M5.3 TV checklist (2026-10-26, all 12 pass; Laith at the TV)
+1. Wrong PIN: "wrong PIN", nothing installed. 5 bad_pin (20:51:51-20:52:14): on-screen lock countdown. The lock still held after two `systemctl restart lumen-helper.socket` (the restarted helper reported the persisted lock).
+2. Right PIN installed `root-test`: apt history `install -- sl`, progress lines on screen, tile appeared live.
+3. Uninstall with the PIN: `remove -- sl`, tile gone.
+4. Tampered manifest `~/m53-tampered.json` (via settings.toml `store_url`): `root-evil` (id not on the allowlist) showed the Store's "run it over SSH" fallback, no PIN pad, nothing sent. A raw request to the helper socket for `root-evil` (run by Laith) logged `Install "root-evil" -> not_allowed` (the allowlist is checked before the PIN, so no PIN attempt used). `root-test` with `vim` added in the manifest installed only `sl` (apt `install -- sl`); vim never installed. Laith decided (option a, 2026-10-26): the pass condition is "the manifest cannot add packages or ids" (the helper takes only an id and uses the allowlist's packages; Lumen does not refuse a mismatched list outright). Gate wording updated in MILESTONES.
+5. Journal/apt history: `/usr/bin/apt-get -y -o DPkg::Lock::Timeout=120 ... --no-install-recommends --no-remove install -- <pkgs>` and `remove -- <pkgs>`.
+6. Allowlist and binary root:root, not group/other-writable; `/var/lib/lumen-helper` root 0700 (PIN file unreadable to laith); socket root:lumen-helper 0660; the helper logs "idle, exiting" 60 s after the last request.
+7. A connect to `/run/lumen-helper.sock` as user `nobody` (python3 run as nobody; socat isn't installed on pitv): PermissionError Errno 13.
+8. Kodi uninstall from the Store with the PIN removed exactly the 8 allowlisted packages (kodi, kodi-game-libretro, kodi-inputstream-adaptive, libretro-mgba, libretro-gambatte, libretro-desmume, kodi-repository-kodi, kodi-visualization-spectrum); kodi-bin + kodi-data remain (expected). `du` ~/.kodi 245140 / ~/.kodi-tile 132 / ~/roms 1066016 identical before/after. Tile gone live; Restart Lumen did not bring it back. `~/.config/lumen-tv/apps/kodi.toml.bak` remains (not loaded).
+9. Kodi install from the Store: 7 packages, tile live, launched fullscreen=true, red -> Home terminated it. Uninstalled again, so pitv ends without Kodi (only kodi-bin/kodi-data). ~/.kodi grew 16 KB and ~/.kodi-tile 8 KB from Kodi's own writes during launch; roms unchanged.
+10. Rapid Restart Lumen -> `start-limit-hit` -> `OnFailure=` -> getty@tty1 login prompt, no autologin override; SSH fine. `reset-failed` + `start` brought Lumen back and stopped getty.
+11. Steam Link streamed and Home closed it (exit 0). AirPlay mirrored from the iPhone and returned to Lumen after the phone stopped (harmless `GStreamer-Wayland-CRITICAL gst_wl_window_ensure_fullscreen` assertions in the log).
+12. `cargo test --workspace`: Mac helper 57 + 9, lumen-tv 348 / 2 ignored; pitv 57 + 9 + 356 / 2 ignored (3 runs), release build no warnings.
+
+Gate setup (2026-10-26): pitv's `~/.config/lumen-tv/settings.toml` got `store_url = "/home/laith/lumen-tv/store/manifest.json"` because the public GitHub manifest lacked the kodi/root-test entries (backup `settings.toml.m53bak`). Remove that line after `store/manifest.json` is pushed.
+
+### M5.3 build phases (rotated from IN-PROGRESS Active Plan, 2026-10-26)
+Phases 1-2 (2026-10-25): `lumen-helper` crate, Lumen client + Store job path, PIN pad, Kodi inventory, security review (above). Phase 3: Store PIN flow, session files, installer, allowlist, manifest entries, Kodi out of the defaults, console rescue in the units. Phases 4-5 (2026-10-26): review (no critical; Step-after-PIN moved into `store::run_root`, relative `--store-check` paths, install.sh helper preflight first, `cmp` on units, sha256 of the root binary), coverage (helper 25 -> 57 tests), docs. K6 gained `kodi-repository-kodi` (Laith, 2026-10-26; pitv sim: 8 removed, 0 installed). Pi-only bug fixed: helper RST on oversized requests (half-close + bounded drain). Before-snapshot for check 8: 10 kodi/libretro pkgs installed; du ~/.kodi 245140, ~/.kodi-tile 132, ~/roms 1066016.
+

@@ -8,4 +8,4 @@ rsync -a --delete --exclude .git --exclude /target --exclude /.claude ./ pitv:lu
 # .git is not synced, so hand the commit to build.rs (the About panel shows it).
 GIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 [ -z "$(git status --porcelain 2>/dev/null)" ] || GIT="$GIT-dirty"
-ssh pitv "cd lumen-tv && LUMEN_GIT=$GIT ~/.cargo/bin/cargo build --release"
+ssh pitv "cd lumen-tv && LUMEN_GIT=$GIT ~/.cargo/bin/cargo build --release --workspace"

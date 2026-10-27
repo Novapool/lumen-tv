@@ -1,7 +1,7 @@
 // Store details and confirm screens: one app's description and the exact
 // commands it runs. Pure view: navigation state lives on AppWindow.
 // Buttons: with an action, [action, Back] (confirm: [Cancel, Run]);
-// needs-root apps have only [Back].
+// root-mode 2 and 3 apps (SSH only) have only [Back].
 
 import { Theme } from "theme.slint";
 import { StoreItem } from "store.slint";
@@ -36,9 +36,11 @@ export component DetailsScreen inherits Rectangle {
     // Scroll position in steps (Up/Down on the TV remote); clamped to what overflows.
     in-out property <int> scroll: 0;
 
-    property <[string]> steps: root.item.installed ? root.item.uninstall : root.item.install;
+    // Mode 1 shows the helper's own command; the manifest's SSH text is for modes 2 and 3.
+    property <[string]> steps: root.item.root-mode == 1 ? [root.item.root-command] : root.item.installed ? root.item.uninstall : root.item.install;
     property <string> verb: root.item.installed ? "Uninstall" : "Install";
-    property <bool> actionable: !root.item.needs-root;
+    property <bool> ssh-only: root.item.root-mode >= 2;
+    property <bool> actionable: !root.ssh-only;
     property <length> view-h: root.height - 7 * root.rem - 3.4 * root.rem - 6 * root.rem;
     property <length> step-h: 4 * root.rem;
     property <length> max-scroll: max(0px, lay.preferred-height - root.view-h);
@@ -121,17 +123,34 @@ export component DetailsScreen inherits Rectangle {
                 wrap: char-wrap;
             }
 
+            // Modes 2 and 3: why the PIN path is closed.
+            if root.item.root-mode == 3 && !root.confirm: Text {
+                text: "Set a PIN over SSH: sudo /usr/local/libexec/lumen-helper set-pin";
+                font-size: 1.3 * root.rem;
+                color: Theme.fail;
+                wrap: char-wrap;
+            }
+
+            if root.item.root-mode == 2 && root.item.root-note != "" && !root.confirm: Text {
+                text: root.item.root-note;
+                font-size: 1.3 * root.rem;
+                color: Theme.fail;
+                wrap: word-wrap;
+            }
+
             Text {
                 text: root.confirm
                     ? (root.steps.length == 0
                         ? (root.item.installed ? "Remove the app entry?" : "Add the app entry?")
                         : "Run these " + root.steps.length + (root.steps.length == 1 ? " command?" : " commands?"))
-                    : (root.item.needs-root
+                    : (root.ssh-only
                         ? "Needs root: run this over SSH"
+                        : root.item.root-mode == 1
+                        ? "Needs root: asks for the PIN"
                         : root.item.installed ? "Uninstall runs:" : "Install runs:");
                 font-size: 1.5 * root.rem;
                 font-weight: 650;
-                color: root.item.needs-root && !root.confirm ? Theme.fail : Theme.text;
+                color: root.ssh-only && !root.confirm ? Theme.fail : Theme.text;
                 wrap: word-wrap;
             }
 

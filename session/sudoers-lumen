@@ -1,2 +1,2 @@
-# Lets laith (and Claude over ssh) switch the TV between Kodi and the Lumen test session.
+# Lets laith (and Claude over ssh) start/stop the Lumen test session.
 laith ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block lumen-test.service, /usr/bin/systemctl stop lumen-test.service

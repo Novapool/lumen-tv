@@ -1,10 +1,13 @@
 #!/bin/sh
-# Starts Kodi for the Lumen Kodi tile with its CEC peripheral switched off.
-# Kodi's libcec otherwise takes the TV remote from Lumen and, on exit, tells
-# the TV to leave the Pi's input. The boot Kodi (kodi.service, ~/.kodi) is
-# never touched: this one runs from its own home, ~/.kodi-tile (KODI_DATA is
-# what kodi's launcher maps to special://home/), which links back to the
-# shared addons and userdata. Only peripheral_data and temp are its own.
+# Launcher for the Kodi Store entry (run as ~/lumen-tv/config/kodi-tile). There
+# is no boot Kodi any more: Lumen is the boot session and Kodi is an optional
+# app installed from the Store. Starts Kodi with its CEC peripheral switched
+# off: Kodi's libcec otherwise takes the TV remote from Lumen and, on exit,
+# tells the TV to leave the Pi's input. It runs from its own home, ~/.kodi-tile
+# (KODI_DATA is what kodi's launcher maps to special://home/), which links back
+# to the shared addons and userdata in ~/.kodi (still Kodi's data home, never
+# touched here). Only peripheral_data and temp are its own.
+# ~/.local/bin/kodi-tile on pitv is the old copy of this script.
 set -e
 HOME_SRC="$HOME/.kodi"
 TILE="$HOME/.kodi-tile"

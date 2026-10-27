@@ -1,0 +1,146 @@
+// PIN pad for the Store's root-level installs. Pure view: no callbacks.
+// Navigation state (sel, digits, the PIN string itself) lives on AppWindow and
+// is wired by Job 3.1; the PIN never reaches this file, only how many digits.
+// Flat opaque fills only (Slint rules); everything is sized in rem.
+//
+// Properties (all `in`):
+//   rem            length  1/120 of the window width (16px at 1080p)
+//   title          string  top line, e.g. the app name
+//   digits         int     how many digits are entered (dots filled)
+//   max-digits     int     number of dot slots, 4..8 (default 8; clamped)
+//   sel            int     focused key, 0..11 (see layout)
+//   message        string  error / lock countdown line ("" hides it)
+//   message-level  int     -1 error (Theme.fail), 0 info (muted)
+//   busy           bool    greys the grid while the helper checks the PIN
+//
+// Key index layout (row-major, 3 columns x 4 rows):
+//    0:1   1:2   2:3
+//    3:4   4:5   5:6
+//    6:7   7:8   8:9
+//    9:⌫  10:0  11:OK
+// Select on i: 0..8 -> digit i+1; 9 -> delete; 10 -> digit 0; 11 -> submit.
+// Use PinKeys.kind(i) / PinKeys.digit(i) / PinKeys.label(i) to map it.
+// Moving: col = sel % 3, row = sel / 3 (wrap or clamp is the wiring's choice).
+
+import { Theme } from "theme.slint";
+
+export global PinKeys {
+    // 0 digit, 1 delete, 2 submit
+    public pure function kind(i: int) -> int {
+        return i == 9 ? 1 : i == 11 ? 2 : 0;
+    }
+    // The digit a digit key enters, or -1 for delete/submit.
+    public pure function digit(i: int) -> int {
+        return i == 9 || i == 11 ? -1 : i == 10 ? 0 : i + 1;
+    }
+    public pure function label(i: int) -> string {
+        return i == 9 ? "⌫" : i == 11 ? "OK" : i == 10 ? "0" : (i + 1);
+    }
+}
+
+component Key inherits Rectangle {
+    in property <string> label;
+    in property <bool> focused;
+    in property <bool> busy;
+    in property <length> rem: 16px;
+
+    width: 8 * root.rem;
+    height: 5 * root.rem;
+    border-radius: 0.6 * root.rem;
+    background: root.focused ? Theme.focus-bg : Theme.panel;
+    border-width: root.focused ? 0.18 * root.rem : 0px;
+    border-color: Theme.text;
+
+    Text {
+        text: root.label;
+        font-size: 2.2 * root.rem;
+        font-weight: root.focused ? 700 : 500;
+        color: root.busy ? Theme.muted : root.focused ? Theme.text : Theme.muted;
+        opacity: root.busy ? 0.5 : 1.0;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component PinPad inherits Rectangle {
+    in property <length> rem: 16px;
+    in property <string> title: "";
+    in property <int> digits: 0;
+    in property <int> max-digits: 8;
+    in property <int> sel: 10;
+    in property <string> message: "";
+    in property <int> message-level: 0; // -1 error
+    in property <bool> busy: false;
+
+    property <int> slots: max(4, min(8, root.max-digits));
+
+    background: Theme.bg;
+
+    // Everything hangs off one centered column, 26 rem wide (3 keys + gaps).
+    Text {
+        x: 0;
+        y: 4 * root.rem;
+        width: root.width;
+        text: root.title;
+        font-size: 2.4 * root.rem;
+        font-weight: 750;
+        color: Theme.text;
+        horizontal-alignment: center;
+    }
+
+    Text {
+        x: 0;
+        y: 7.6 * root.rem;
+        width: root.width;
+        text: "Enter PIN";
+        font-size: 1.6 * root.rem;
+        color: Theme.muted;
+        horizontal-alignment: center;
+    }
+
+    HorizontalLayout {
+        y: 11.5 * root.rem;
+        x: (root.width - (root.slots * 2.2 - 0.8) * root.rem) / 2;
+        width: (root.slots * 2.2 - 0.8) * root.rem;
+        height: 1.4 * root.rem;
+        spacing: 0.8 * root.rem;
+
+        for i in root.slots: Rectangle {
+            width: 1.4 * root.rem;
+            height: 1.4 * root.rem;
+            border-radius: 0.7 * root.rem;
+            background: i < root.digits ? Theme.text : Theme.panel;
+            border-width: 0.15 * root.rem;
+            border-color: i < root.digits ? Theme.text : Theme.muted;
+        }
+    }
+
+    VerticalLayout {
+        y: 16 * root.rem;
+        x: (root.width - 26 * root.rem) / 2;
+        width: 26 * root.rem;
+        spacing: 1 * root.rem;
+
+        for r in 4: HorizontalLayout {
+            spacing: 1 * root.rem;
+
+            for c in 3: Key {
+                label: PinKeys.label(r * 3 + c);
+                focused: root.sel == r * 3 + c;
+                busy: root.busy;
+                rem: root.rem;
+            }
+        }
+    }
+
+    Text {
+        x: 0;
+        y: 43 * root.rem;
+        width: root.width;
+        text: root.busy && root.message == "" ? "Checking…" : root.message;
+        font-size: 1.6 * root.rem;
+        font-weight: 600;
+        color: root.message-level == -1 ? Theme.fail : Theme.muted;
+        horizontal-alignment: center;
+    }
+}

@@ -1,11 +1,11 @@
 // Power screen actions: Restart Lumen, Reboot, Shut down (ui/power.slint).
 //
 // Restart Lumen just ends the event loop: lumen.service has Restart=always,
-// so the session comes back (under lumen-test.service, Kodi comes back
-// instead). Reboot and Shut down go through logind with `systemctl`: polkit
-// lets the active local session on tty1 do that without a password, so no
-// sudoers entry is needed. They run on a worker thread and report a failure
-// back to the screen.
+// so the session comes back (under lumen-test.service, ExecStopPost starts
+// lumen.service, Lumen's boot session, instead). Reboot and Shut down go
+// through logind with `systemctl`: polkit lets the active local session on
+// tty1 do that without a password, so no sudoers entry is needed. They run on
+// a worker thread and report a failure back to the screen.
 
 use std::time::Duration;
 

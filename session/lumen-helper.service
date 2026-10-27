@@ -1,0 +1,27 @@
+# Root install helper (PIN + allowlist gate for Store apt installs). Started by
+# lumen-helper.socket, exits after 60 s idle. No [Install]: only the socket is enabled.
+[Unit]
+Description=Lumen root install helper
+Requires=lumen-helper.socket
+After=lumen-helper.socket
+
+[Service]
+ExecStart=/usr/local/libexec/lumen-helper serve
+# No privilege gain through exec of helpers it spawns.
+NoNewPrivileges=yes
+# Private /tmp for apt/dpkg scratch files.
+PrivateTmp=yes
+# Nothing here needs /home, /root or /run/user.
+ProtectHome=yes
+# Read-only kernel tunables, modules, logs and cgroups: apt needs none of them.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+# /var/lib/lumen-helper holds the PIN hash and lockout counter (survives restarts).
+StateDirectory=lumen-helper
+StateDirectoryMode=0700
+# Files it creates are root-only.
+UMask=0077
+# Deliberately NOT set: RestrictSUIDSGID=yes and ProtectSystem=strict.
+# dpkg installs setuid files and writes /usr, /var and /etc.

@@ -12,7 +12,11 @@ export struct StoreItem {
     glyph: string,
     color: color,
     installed: bool,
-    needs-root: bool,
+    // 0 not root; 1 helper ready (asks for the PIN); 2 no helper / id not allowlisted (SSH text);
+    // 3 helper up but no PIN set. See root_mode in src/storefeed.rs.
+    root-mode: int,
+    root-note: string, // why the helper can't be used, if it said (e.g. restart Lumen for the group)
+    root-command: string, // mode 1: what the helper will run, from the helper's own status
     launch: string, // what the installed tile runs: the command, or the URL of a web app
     install: [string],
     uninstall: [string],
@@ -189,7 +193,7 @@ export component StoreScreen inherits Rectangle {
                     x: parent.width - 1.6 * root.rem - self.width;
                     width: 14 * root.rem;
                     height: parent.height;
-                    text: it.installed ? "Installed" : it.needs-root ? "Needs root" : "";
+                    text: it.installed ? "Installed" : it.root-mode == 1 ? "Needs PIN" : it.root-mode > 1 ? "Needs root" : "";
                     font-size: 1.4 * root.rem;
                     color: it.installed ? Theme.pass : Theme.muted;
                     horizontal-alignment: right;

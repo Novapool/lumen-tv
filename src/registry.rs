@@ -17,15 +17,16 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// The apps built into Lumen.
-pub const SHIPPED: [(&str, &str); 5] = [
+pub const SHIPPED: [(&str, &str); 4] = [
     ("jellyfin.toml", include_str!("../config/apps/jellyfin.toml")),
     ("steamlink.toml", include_str!("../config/apps/steamlink.toml")),
-    ("kodi.toml", include_str!("../config/apps/kodi.toml")),
     ("youtube.toml", include_str!("../config/apps/youtube.toml")),
     ("airplay.toml", include_str!("../config/apps/airplay.toml")),
 ];
 
-/// Defaults that shipped before the `.shipped` marker existed (pre-M5.1).
+/// Defaults that shipped before the `.shipped` marker existed (pre-M5.1). `kodi`
+/// stays listed although it is no longer a default (the Store offers it now), so
+/// a pre-marker install counts it as offered and nothing re-adds it.
 const LEGACY_SHIPPED: [&str; 3] = ["jellyfin", "steamlink", "kodi"];
 
 /// The Lumen actions a `keys` override may name. Home/Menu are deliberately absent.
@@ -360,11 +361,11 @@ mod tests {
         let l = load_texts(SHIPPED.iter().map(|(n, t)| (n.to_string(), Ok(t.to_string()))));
         assert!(l.errors.is_empty());
         let ids: Vec<_> = l.entries.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, ["jellyfin", "youtube", "airplay", "steamlink", "kodi"]);
+        assert_eq!(ids, ["jellyfin", "youtube", "airplay", "steamlink"]);
         let by = |id: &str| l.entries.iter().find(|e| e.id == id).unwrap();
         assert_eq!(by("jellyfin").kind, Kind::Url);
         assert_eq!(by("jellyfin").background, Background::KeepAlive);
-        assert!(by("steamlink").exclusive && by("kodi").exclusive);
+        assert!(by("steamlink").exclusive);
         assert!(by("steamlink").process.is_some());
     }
 
@@ -472,7 +473,7 @@ mod tests {
         let dir = temp("seed");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(seed_defaults(&dir).unwrap());
-        assert_eq!(load(&dir).entries.len(), 5);
+        assert_eq!(load(&dir).entries.len(), 4);
         std::fs::write(dir.join("kodi.toml"), "mine").unwrap();
         assert!(!seed_defaults(&dir).unwrap());
         assert_eq!(std::fs::read_to_string(dir.join("kodi.toml")).unwrap(), "mine");
@@ -491,7 +492,7 @@ mod tests {
         let dir = temp("seed-missing");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(seed_defaults(&dir).unwrap());
-        assert_eq!(marker_ids(&dir).len(), 5);
+        assert_eq!(marker_ids(&dir).len(), 4);
         assert!(load(&dir).errors.is_empty());
         assert!(!dir.join(".shipped.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
@@ -544,12 +545,46 @@ mod tests {
     }
 
     #[test]
+    fn fresh_dir_never_gets_kodi() {
+        let dir = temp("seed-nokodi");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(seed_defaults(&dir).unwrap());
+        assert!(!dir.join("kodi.toml").exists());
+        assert!(!marker_ids(&dir).contains(&"kodi".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marker_with_kodi_and_existing_kodi_toml_writes_nothing() {
+        let dir = temp("seed-kodi-kept");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".shipped"), "jellyfin\nsteamlink\nkodi\nyoutube\nairplay\n").unwrap();
+        std::fs::write(dir.join("kodi.toml"), "mine").unwrap();
+        assert!(!seed_defaults(&dir).unwrap());
+        assert_eq!(std::fs::read_to_string(dir.join("kodi.toml")).unwrap(), "mine");
+        assert!(!dir.join("jellyfin.toml").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pre_marker_dir_counts_kodi_as_offered_and_does_not_write_it() {
+        let dir = temp("seed-premarker-kodi");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("jellyfin.toml"), "mine").unwrap();
+        assert!(seed_defaults(&dir).unwrap());
+        assert!(!dir.join("kodi.toml").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn marker_file_is_not_loaded_as_an_app() {
         let dir = temp("seed-ignored");
         let _ = std::fs::remove_dir_all(&dir);
         seed_defaults(&dir).unwrap();
         let l = load(&dir);
-        assert_eq!(l.entries.len(), 5);
+        assert_eq!(l.entries.len(), 4);
         assert!(l.errors.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -600,7 +635,7 @@ mod tests {
         let e = parse("youtube.toml", include_str!("../config/apps/youtube.toml")).unwrap();
         let back: Entry = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
         assert_eq!(back, e);
-        let plain = parse("kodi.toml", include_str!("../config/apps/kodi.toml")).unwrap();
+        let plain = parse("steamlink.toml", include_str!("../config/apps/steamlink.toml")).unwrap();
         let json = serde_json::to_string(&plain).unwrap();
         assert!(!json.contains("user_agent") && !json.contains("keys"));
     }
