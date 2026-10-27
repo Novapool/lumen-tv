@@ -105,7 +105,7 @@ Decisions so far:
 ## Current Work
 M5.3 closed 2026-10-26 (all 12 Gate checks pass; result line in MILESTONES.md, per-check evidence in docs/ARCHIVE.md). Nothing is being built. Waiting on Laith for the K5 removal approvals and the go to push `store/manifest.json`.
 
-**pitv state to remember (2026-10-26):** `~/.config/lumen-tv/settings.toml` has `store_url = "/home/laith/lumen-tv/store/manifest.json"` (added for the Gate because the public GitHub manifest lacks the kodi/root-test entries; backup `settings.toml.m53bak`). Remove that line after the manifest is pushed. The root helper is installed (`lumen-helper.socket` enabled, PIN set). Kodi is uninstalled (kodi-bin/kodi-data remain); `~/.config/lumen-tv/apps/kodi.toml.bak` remains (not loaded).
+**pitv state to remember (2026-10-26):** M5.3 pushed (22bb762); the public manifest has the kodi/root-test entries and pitv's Store reads it again (the Gate's temporary `store_url` line is removed). The root helper is installed (`lumen-helper.socket` enabled, PIN set). Kodi is uninstalled (kodi-bin/kodi-data remain); `~/.config/lumen-tv/apps/kodi.toml.bak` remains (not loaded).
 
 **`[kodi]` allowlist set (K6):** install = kodi, kodi-game-libretro, kodi-inputstream-adaptive, libretro-mgba, libretro-gambatte, libretro-desmume, kodi-repository-kodi; remove = those seven + kodi-visualization-spectrum (apt simulation: 8 removed, 0 installed; the helper refuses anything apt would remove or install beyond the list). Helper: `helper/` crate (`lumen-helper serve|set-pin|check`), argon2id PIN under `/var/lib/lumen-helper/`, 5 wrong → 60 s lock doubling to 1 h. Lumen side: `src/platform/installer.rs`, `store::run_root`, `ui/pinpad.slint`. Review findings: docs/ARCHIVE.md → "M5.3 Phase 2 security review".
 
@@ -137,8 +137,7 @@ Contracts from M5 (as built): mode precedence settings.toml `mode` > `LUMEN_MODE
 
 ## Next Steps
 1. **M5.2 on hold** (Laith, 2026-10-25). When it resumes: spike finding so far is that Steam Link ships SDL3 + HIDAPI and may read the pad via `/dev/hidraw*`; also revisit `exclusive`.
-2. Push `store/manifest.json` when Laith says so (the public manifest lacks the kodi/root-test entries), then remove the `store_url` line from pitv's `settings.toml`. Commit the M5.1 to M5.3 work only when Laith asks.
-3. **K5 removals, one at a time, with Laith's approval** (Lumen needs none of these; Kodi is gone from pitv). State on pitv 2026-10-26: all three Kodi-era units disabled/static and inactive.
+2. **K5 removals, one at a time, with Laith's approval** (Lumen needs none of these; Kodi is gone from pitv). State on pitv 2026-10-26: all three Kodi-era units disabled/static and inactive.
    1. `/etc/systemd/system/steamlink.service` (repo `../config/steamlink.service`): its ExecStopPost starts Kodi. Remove.
    2. `/etc/systemd/system/uxplay.service` (repo `../config/uxplay.service`): the Kodi "Screen Mirror" favourite; Lumen uses `session/lumen-airplay`. Remove.
    3. `/etc/sudoers.d/steamlink` and `/etc/sudoers.d/uxplay` (repo `../config/sudoers-*`): allow only the two start scripts. Remove after 1 and 2.
@@ -147,7 +146,7 @@ Contracts from M5 (as built): mode precedence settings.toml `mode` > `LUMEN_MODE
    6. `~/.local/bin/kodi-tile`: unused copy (the Store entry runs `~/lumen-tv/config/kodi-tile`). Remove.
    7. Optional: drop `kodi.service steamlink.service uxplay.service` from `Conflicts=` in `session/lumen.service` and `lumen-test.service` (repo change, then reinstall the unit); stale `~/.config/lumen-tv/apps/kodi.toml.bak`; orphaned `kodi-bin`/`kodi-data` (`apt-get remove`; never purge or autoremove without asking).
    Keep: `../config/kodi-games/`, `favourites.xml`, `sources.xml`, `skinshortcuts-mainmenu.DATA.xml` (reinstall references), `nftables.conf`, the wireplumber file. Never touch ~/.kodi, ~/.kodi-tile, ~/.kodi-backup-*, ~/roms. Pi-side commands: docs/ARCHIVE.md → "Removal commands for Laith". Repo-side removals (`git rm` in `../config/`) are a follow-up job after approval.
-4. Confirm the proposed M5.5 and M6 Gate lines with Laith before either starts, then run the M5.5 Phase 6 spike (RetroArch is a priority: it replaces Kodi's RetroPlayer).
+3. Confirm the proposed M5.5 and M6 Gate lines with Laith before either starts, then run the M5.5 Phase 6 spike (RetroArch is a priority: it replaces Kodi's RetroPlayer).
 5. Untested: uninstalling a keep-alive app while it runs (M4's 8 s wait).
 6. Small: 5 known clippy warnings (`bluetooth.rs:432`, `icons.rs:42/70`, `input/mapping.rs:296`, `store.rs:463`). pitv has no clippy component (`rustup component add clippy`, Laith's call).
 
