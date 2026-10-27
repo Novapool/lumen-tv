@@ -7,7 +7,7 @@ invisible to Home. So this opens a fullscreen GTK window with Wayland app_id
 and runs UxPlay, whose own video window (waylandsink) covers ours while mirroring.
 
 UxPlay has no exit-on-disconnect option, so we watch its log (same logic as the
-Kodi-era ../config/airplay-mirror):
+Kodi-era airplay-mirror wrapper, removed 2026-10-26):
   - exit GRACE seconds after the phone stops mirroring ("raop_rtp_mirror->running
     is no longer true"); a new "starting mirroring" within GRACE cancels it
   - exit after IDLE_TIMEOUT seconds with no client
