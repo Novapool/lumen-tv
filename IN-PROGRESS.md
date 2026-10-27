@@ -147,8 +147,8 @@ Contracts from M5 (as built): mode precedence settings.toml `mode` > `LUMEN_MODE
    7. Optional: drop `kodi.service steamlink.service uxplay.service` from `Conflicts=` in `session/lumen.service` and `lumen-test.service` (repo change, then reinstall the unit); stale `~/.config/lumen-tv/apps/kodi.toml.bak`; orphaned `kodi-bin`/`kodi-data` (`apt-get remove`; never purge or autoremove without asking).
    Keep: `../config/kodi-games/`, `favourites.xml`, `sources.xml`, `skinshortcuts-mainmenu.DATA.xml` (reinstall references), `nftables.conf`, the wireplumber file. Never touch ~/.kodi, ~/.kodi-tile, ~/.kodi-backup-*, ~/roms. Pi-side commands: docs/ARCHIVE.md → "Removal commands for Laith". Repo-side removals (`git rm` in `../config/`) are a follow-up job after approval.
 3. Confirm the proposed M5.5 and M6 Gate lines with Laith before either starts, then run the M5.5 Phase 6 spike (RetroArch is a priority: it replaces Kodi's RetroPlayer).
-5. Untested: uninstalling a keep-alive app while it runs (M4's 8 s wait).
-6. Small: 5 known clippy warnings (`bluetooth.rs:432`, `icons.rs:42/70`, `input/mapping.rs:296`, `store.rs:463`). pitv has no clippy component (`rustup component add clippy`, Laith's call).
+4. Untested: uninstalling a keep-alive app while it runs (M4's 8 s wait).
+5. Small: 5 known clippy warnings (`bluetooth.rs:432`, `icons.rs:42/70`, `input/mapping.rs:296`, `store.rs:463`). pitv has no clippy component (`rustup component add clippy`, Laith's call).
 
 ## Recently Completed
 - M5.3 Root install helper (PIN) + Kodi as a Store app (2026-10-26): all 12 Gate checks pass at the TV (Laith). Kodi uninstalled from pitv; crash rescue = tty1 login. Result line in MILESTONES.md, checklist + build phases in docs/ARCHIVE.md.
