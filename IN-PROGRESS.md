@@ -8,6 +8,8 @@ Lumen's UI is Slint (femtovg), 60 fps at 1080p60 and 4K60 on the TV. Done throug
 ## Active Plan
 Order: M5.5 → M6 (M5.2 on hold) (see MILESTONES.md), stopping after each one for a TV test. M5.3 closed 2026-10-26 (build phases in docs/ARCHIVE.md); K5 removals done on pitv 2026-10-26.
 
+**M5.5 (next, not started):** Gate confirmed by Laith 2026-10-26, incl. the Store cleanup (kolourpaint, store-test, root-test out of the public manifest; `[root-test]` out of the allowlist). Start only when Laith asks: `orchestrator` writes a fresh AGENT_JOBS.md (replacing the finished M5.3 plan), then the main conversation spawns the jobs. First: Phase 6 spike (Spotify route + catalogue availability on aarch64, read-only on pitv; RetroArch is a priority).
+
 **M5.2:** on hold (Laith, 2026-10-25). Spike stopped; its Pi changes undone.
 
 Layout (as built):
