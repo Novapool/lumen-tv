@@ -6,12 +6,10 @@
 Description=Lumen session (labwc)
 After=systemd-user-sessions.service network-online.target sound.target bluetooth.target
 Wants=network-online.target
-# The Kodi-era names (kodi.service) are harmless once those units are gone; they
-# get dropped after Laith approves the K5 removals.
-Conflicts=getty@tty1.service kodi.service lumen-test.service steamlink.service uxplay.service
+Conflicts=getty@tty1.service lumen-test.service
 # Restart the session whenever it exits, crash or clean exit (a clean exit
 # would otherwise leave the TV black). An explicit stop, or a Conflicts= unit
-# such as steamlink starting, is not restarted. Three exits in 60 s put the unit
+# such as lumen-test starting, is not restarted. Three exits in 60 s put the unit
 # in "failed", and OnFailure then starts a login prompt on tty1 (no autologin):
 # the console rescue. Log in there, fix or revert, then as root run
 # `systemctl reset-failed lumen.service && systemctl start lumen.service` to take

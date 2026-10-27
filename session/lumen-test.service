@@ -6,7 +6,7 @@
 Description=Lumen test session (labwc)
 After=systemd-user-sessions.service network-online.target sound.target bluetooth.target
 Wants=network-online.target
-Conflicts=getty@tty1.service kodi.service steamlink.service uxplay.service
+Conflicts=getty@tty1.service
 
 [Service]
 User=laith

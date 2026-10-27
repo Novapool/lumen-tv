@@ -70,7 +70,7 @@ sudo systemctl daemon-reload
 
 ### Boot unit behaviour
 
-`lumen.service` runs `labwc` with `session/start-lumen.sh` on tty1, `Restart=always`: any exit restarts the session (a clean exit would otherwise leave the TV black). An explicit `systemctl stop`, or a conflicting unit starting (`lumen-test`; the Kodi-era `steamlink`, `uxplay` and `kodi` units are still named in `Conflicts=` until they're removed), is not restarted. `StartLimitBurst=3` in 60 s: the 3rd exit within 60 s makes the unit fail and `OnFailure=getty@tty1.service` puts a login prompt on the TV (the console rescue; no autologin, SSH still works). After a rescue, a plain `systemctl start lumen.service` is refused for a while (start limit); bring Lumen back with `sudo systemctl reset-failed lumen.service && sudo systemctl start lumen.service`. `start-lumen.sh` waits for the HDMI output, sets the mode, then `exec`s the binary.
+`lumen.service` runs `labwc` with `session/start-lumen.sh` on tty1, `Restart=always`: any exit restarts the session (a clean exit would otherwise leave the TV black). An explicit `systemctl stop`, or a conflicting unit starting (`lumen-test`), is not restarted. `StartLimitBurst=3` in 60 s: the 3rd exit within 60 s makes the unit fail and `OnFailure=getty@tty1.service` puts a login prompt on the TV (the console rescue; no autologin, SSH still works). After a rescue, a plain `systemctl start lumen.service` is refused for a while (start limit); bring Lumen back with `sudo systemctl reset-failed lumen.service && sudo systemctl start lumen.service`. `start-lumen.sh` waits for the HDMI output, sets the mode, then `exec`s the binary.
 
 ### Power
 
