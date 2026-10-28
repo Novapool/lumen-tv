@@ -395,3 +395,212 @@ Gate setup (2026-10-26): pitv's `~/.config/lumen-tv/settings.toml` got `store_ur
 ### M5.3 build phases (rotated from IN-PROGRESS Active Plan, 2026-10-26)
 Phases 1-2 (2026-10-25): `lumen-helper` crate, Lumen client + Store job path, PIN pad, Kodi inventory, security review (above). Phase 3: Store PIN flow, session files, installer, allowlist, manifest entries, Kodi out of the defaults, console rescue in the units. Phases 4-5 (2026-10-26): review (no critical; Step-after-PIN moved into `store::run_root`, relative `--store-check` paths, install.sh helper preflight first, `cmp` on units, sha256 of the root binary), coverage (helper 25 -> 57 tests), docs. K6 gained `kodi-repository-kodi` (Laith, 2026-10-26; pitv sim: 8 removed, 0 installed). Pi-only bug fixed: helper RST on oversized requests (half-close + bounded drain). Before-snapshot for check 8: 10 kodi/libretro pkgs installed; du ~/.kodi 245140, ~/.kodi-tile 132, ~/roms 1066016.
 
+## M5.5 Phase 6b/6c — Spotify Connect review + test results (2026-10-27, moved from IN-PROGRESS)
+All findings were fixed before 6c (curl stall limits + TimeoutStartSec, flag/arch checks, uninstall stops the update unit, `type` rejected on tile:false, notes wording).
+
+### Review — Phase 6a Spotify Connect (Job 6b.1, 2026-10-27)
+**Summary:** Ready to test after one fix. All scope items of 6a.1-6a.3 are in. Key handling is sound: the key goes into a temp file made under `umask 077` in the 0700 key dir, written by the `printf` builtin, then `mv`. It never reaches stdout, stderr or any argv the script controls; the only exception is the accepted `soloist -k` in the unit. The tty echo comes back on every exit path (checked by hand under a pty: Ctrl-C during the prompt restored echo, exit 130, no key file left). The download is https-only (`--proto '=https'` also covers redirects), checked for ELF magic and e_machine 0xb7, and renamed in from the same directory. Uninstall is idempotent. The unit keeps `127.0.0.1:9090` and `RestartPreventExitStatus=10`, and `ConditionPathExists` stops a restart loop when there is no key. `tile: false` uses one predicate (`store::is_installed`), and tiled apps keep their exact old path in `check`, `commit`, the feed and the loop. The `validate_identity` split only changes which error is reported first when an entry has several. `dash -n` is clean and the 31 stubbed tests pass. The notes URL and the CDN URL both return 200.
+
+**Issues**
+1. **Required**: `session/lumen-soloist:169` (`fetch`) and `:115-124` (`unit_update_service`). curl has `--connect-timeout` but no `--max-time` or `--speed-limit`, and the update unit is `Type=oneshot`, whose default `TimeoutStartSec` is infinity. If a weekly download stalls, `soloist-update.service` stays "activating" forever, the timer can't start it again, and the binary expires silently at day 90 (exit 10, no music). Store steps are safe: they have a 15-minute limit and the group gets killed. Fix: add `--speed-limit 1024 --speed-time 60` (or `--max-time 600`) to curl, and `TimeoutStartSec=15min` to the update service. Add one test that asserts both are present.
+2. **Nit**: `src/store.rs:29-32,75-78`. A `type` key on a `tile: false` entry is accepted without a word and then dropped from the receipt. The contract says each forbidden key must give a parse error. Fix: add `"type"` to `TILE_ONLY_KEYS` and delete the separate `o.remove("type")` in `to_value`. The loop already strips it.
+3. **Nit**: `session/lumen-soloist:45-53,202-211,259`. The CLI accepts too much: `--force` and `--purge` are taken with any command (`install --purge` is silently ignored), `need_arch` accepts `arm64`, so a non-dry run on the Mac would download Spotify's binary into the Mac's `~/.local/lib`, and `update` on a box without the units installs a bare binary. Fix: reject a flag outside its command, accept only `aarch64`, and in `cmd_update` add `[ -f "$UNITDIR/$SVC" ] || die "not installed"`.
+4. **Nit**: `session/lumen-soloist:292-308`. `uninstall` doesn't stop `soloist-update.service`. An update that is running (or hung, see 1) can run `swap_in` → `mkdir -p "$LIB"` after the `rm -rf` and leave a binary behind after a successful uninstall. Fix: `sc stop "$UPD_SVC" || true` before the `rm`s. Also, `--purge` deletes `~/.cache/soloist` but its message names only the key and the state: name the cache too.
+5. **Nit**: `store/manifest.json` (spotify-connect `notes`). "This is not an unofficial hack, but Spotify's terms may not cover every tool built around it" reads as contradictory on the details screen. Fix: "Soloist is Spotify's own software, used here under Spotify's terms; Spotify can change or withdraw it at any time. Use at your own risk."
+6. **FYI**: `systemctl --user status soloist.service` lists the CGroup command line, so it prints the key. The script's `status` uses `is-active` only (good). Docs (6b.3) and the SC checks must never suggest `status` or `journalctl -u ... -o verbose`. SC4 expects "unchanged, no restart", but the script prints "Soloist is already up to date; nothing to do": align one of them. If an entry ever switches between `tile: true` and `tile: false` while installed, `is_installed` and `commit` follow the manifest, not the receipt, which would leave a TOML orphaned. No entry does this today. If it matters, take `tile` from the receipt when one exists.
+
+**What works well**
+- The binary swap: `cp` to `$LIB/.soloist.new` and then `mv` in the same directory, with the ELF/e_machine check done in the temp dir first. A failed download, unpack or check leaves the old install alone, and tests cover that.
+- `store::is_installed` is a single predicate used by `check`, the feed and the loop, and `commit` returns early for `tile: false`, so the tiled path is byte-for-byte unchanged.
+- The key-leak tests run the real script under dash with argv-logging stubs and assert that the secret appears in none of stdout, stderr or the stub logs.
+
+**Verdict:** Patch and ship. Fix 1 (`session/lumen-soloist`, Job 6a.2's files) before 6c. The Nits can go in the same pass.
+
+### Test Results — Phase 6c (Job 6c.1, 2026-10-27)
+**Verdict: PASS.** No code changed, no commits, nothing installed, soloist.service and lumen.service untouched, Lumen not restarted. Logs are in the tester's scratchpad.
+
+| # | Where | Command | Exit | Result |
+|---|---|---|---|---|
+| 1 | Mac | `cargo test --workspace` | 0 | lumen-tv 372 passed, 0 failed, 2 ignored; helper 57 + 9 passed |
+| 2 | Mac | `cargo run -q -- --store-check store/manifest.json` | 0 | 16 apps, 0 errors; spotify-connect `tile: no` |
+| 3 | Mac | `cargo run -q -- --store-check store/fixtures/test-manifest.json` | 0 | 4 apps, 0 errors; notile-test `tile: no` |
+| 4 | Mac | `python3 -m unittest session/test_lumen_soloist.py` | 0 | Ran 37 tests, OK |
+| 5 | Mac | `python3 -m unittest session/test_lumen_airplay.py` | 0 | Ran 11 tests, OK |
+| 6 | Mac | `dash -n session/lumen-soloist` | 0 | no output |
+| 7 | Pi | `sh scripts/pi-build.sh` (rsync + release build on pitv) | 0 | `Finished release profile [optimized] in 2m 36s` |
+| 8 | pitv | `cargo test --release --workspace` | 0 | lumen-tv 380 passed, 0 failed, 2 ignored; helper 57 + 9 passed |
+| 9 | pitv | `lumen-tv --store-check /home/laith/lumen-tv/store/manifest.json` | 0 | 16 apps, 0 errors |
+| 10 | pitv | `python3 -m unittest session/test_lumen_soloist.py` | 0 | Ran 37 tests, OK |
+| 11 | pitv | `lumen-tv --store-loop --dry-run --source .../store/manifest.json` | 0 | 7 to run, 9 skipped; `spotify-connect  SKIP  no window: background service, checked at the TV` |
+| 12 | pitv | `sh ~/lumen-tv/session/lumen-soloist --dry-run install` | 0 | output below |
+| 13 | pitv | `sh ~/lumen-tv/session/lumen-soloist --dry-run uninstall` | 0 | output below |
+
+Not run: `test_lumen_airplay.py` on pitv (not in the job). The Mac `airplay` run is 11 tests, OK.
+
+**Notes for Laith before 6d:**
+- The Mac and Pi lumen-tv test counts differ (372 vs 380). Same tree, so the 8 extra are probably Pi-only (`cfg`-gated) tests. Not a failure.
+- The install dry run writes `~/.config/systemd/user/soloist.service`, the same path as the hand-installed unit. It then runs `enable` and starts Soloist only when the binary or unit changed. The uninstall dry run would stop `soloist.service` and delete the binary. Neither runs in 6c.
+- Uninstall keeps the key and login state, as Q1 says. `--purge` removes both.
+
+**`sh ~/lumen-tv/session/lumen-soloist --dry-run install` (pitv, exit 0):**
+```
+[dry-run] download https://soloist-builds.spotifycdn.com/soloist_release_arm64.tar.gz (curl --proto '=https' -fL) into a temp dir, unpack, verify an aarch64 ELF
+[dry-run] install the binary and its notices into /home/laith/.local/lib/soloist (existing install kept until the swap)
+[dry-run] write /home/laith/.config/systemd/user/soloist.service:
+    | [Unit]
+    | Description=Spotify Soloist (Spotify Connect receiver, named after this box)
+    | After=pipewire.service pipewire-pulse.service wireplumber.service network-online.target
+    | Wants=pipewire.service
+    | # Without a key Soloist can't start: don't restart-loop, wait for `lumen-soloist set-key`.
+    | ConditionPathExists=%h/.config/soloist/key
+    | 
+    | [Service]
+    | # Soloist only announces the addresses it sees at start, and a user unit can't wait for
+    | # network-online.target: wait (max 60 s) for an IPv4 address (wlan0 if it exists, else any).
+    | ExecStartPre=/bin/sh -c 'for i in $(seq 60); do if [ -d /sys/class/net/wlan0 ]; then ip -4 -o addr show wlan0 | grep -q inet && exit 0; else ip -4 -o addr show scope global | grep -q inet && exit 0; fi; sleep 1; done; exit 0'
+    | # Device name = hostname (%H). WebSocket API on loopback (lumen-karaoke connects there).
+    | # Soloist takes the key only via -k (no env var or key file option), so it comes from the 0600 key file.
+    | # Exit code 10 = build expired: the weekly soloist-update.timer re-downloads it.
+    | ExecStart=/bin/sh -c 'exec %h/.local/lib/soloist/soloist -n %H -z 300 -w 127.0.0.1:9090 -k "$(cat %h/.config/soloist/key)"'
+    | Restart=on-failure
+    | RestartSec=5
+    | RestartPreventExitStatus=10
+    | 
+    | [Install]
+    | WantedBy=default.target
+[dry-run] write /home/laith/.config/systemd/user/soloist-update.service:
+    | [Unit]
+    | Description=Update the Spotify Soloist binary (Lumen)
+    | 
+    | [Service]
+    | Type=oneshot
+    | TimeoutStartSec=15min
+    | ExecStart=/bin/sh "/home/laith/lumen-tv/session/lumen-soloist" update
+[dry-run] write /home/laith/.config/systemd/user/soloist-update.timer:
+    | [Unit]
+    | Description=Weekly Spotify Soloist update check (builds expire after 90 days)
+    | 
+    | [Timer]
+    | OnCalendar=weekly
+    | RandomizedDelaySec=6h
+    | Persistent=true
+    | 
+    | [Install]
+    | WantedBy=timers.target
+[dry-run] systemctl --user daemon-reload
+[dry-run] systemctl --user enable --now soloist-update.timer
+[dry-run] systemctl --user enable soloist.service
+[dry-run] if /home/laith/.config/soloist/key exists: start soloist.service (restart only if it was active and the binary or unit changed)
+[dry-run] otherwise: print 'waiting for a key (run set-key over SSH)'
+```
+
+**`sh ~/lumen-tv/session/lumen-soloist --dry-run uninstall` (pitv, exit 0):**
+```
+[dry-run] systemctl --user stop soloist.service
+[dry-run] systemctl --user stop soloist-update.timer
+[dry-run] systemctl --user stop soloist-update.service
+[dry-run] systemctl --user disable soloist.service soloist-update.timer
+[dry-run] rm -f /home/laith/.config/systemd/user/soloist.service /home/laith/.config/systemd/user/soloist-update.service /home/laith/.config/systemd/user/soloist-update.timer
+[dry-run] rm -f /home/laith/.config/systemd/user/default.target.wants/soloist.service /home/laith/.config/systemd/user/timers.target.wants/soloist-update.timer
+[dry-run] rm -rf /home/laith/.local/lib/soloist
+[dry-run] systemctl --user daemon-reload
+[dry-run] systemctl --user reset-failed soloist.service soloist-update.service soloist-update.timer
+kept your key (/home/laith/.config/soloist/key) and login state (/home/laith/.local/share/soloist); add --purge to remove them
+uninstalled Soloist
+```
+
+## M5.5 TV Gate (2026-10-26/28, all pass; Laith at the TV, Claude over SSH)
+Result line in MILESTONES.md. Spike report follows below this checklist.
+
+**New entries (8, all pass):** each installed from the Store with the remote, tile live without a restart, fullscreen, main action reached, red = Home, Store uninstall.
+- **Spotify (web):** open.spotify.com in kiosk Chromium + `libwidevinecdm0` through the PIN root helper. Playback, Connect device from the phone, lyrics via the remote, red keeps the music playing. `config/browser/spotify-tv/` remote navigation works. Laith's report that Left/Right on the player bar seeked the track was fixed in `remote.js` (sliders not focusable, arrows always move focus) and he confirmed it. Uninstall also removed `libwidevinecdm0`; reinstall put it back through the PIN.
+- **Spotify Connect (Soloist, `session/lumen-soloist`, `tile: false`):** SC1, SC3, SC4, SC5 PASS at the TV. SC2 (`set-key`) not run live because the key pre-existed; covered by script tests. SC6 = the bench below. Details of 6b/6c in the section above.
+- **RetroArch (Flatpak via Xwayland):** DualSense works out of the box; Laith played a GB, a GBA and a DS game.
+- **Moonlight, chiaki-ng:** install, tile, fullscreen, buttons, red = Home and uninstall pass. **Streaming itself NOT tested** (Laith has no host/console).
+- **VLC, Audiobookshelf, Twitch:** all checks pass.
+- **Store section headers** never take focus (pass).
+
+**Dropped conditionals (removed from `store/manifest.json`; manifest now 13 apps, `--store-check` 0 errors):**
+- YouTube Music: with the GoogleTV UA (claims Chrome 11) the site says "not optimized for your browser"; with Chromium's own UA it loads and plays, but the desktop page can't be driven with the remote alone.
+- Pluto TV: black screen with the GoogleTV UA. Tubi: "use a supported browser" with the GoogleTV UA. Neither retried with Chromium's UA.
+
+**Uninstall checks over SSH** (Twitch, YouTube Music, Pluto, Tubi, Spotify, Moonlight, chiaki-ng, VLC): TOML, receipt and Flatpak/package all removed. Flatpak user data stays in `~/.var/app/<id>` (Moonlight, Chiaki4deck, VLC), like the old kolourpaint leftover; acceptable (the Gate asks for package, TOML, tile).
+
+**Automated `--store-loop` (2026-10-26):** all 9 Flatpak/url entries PASS.
+
+**Bench (1080p, all 8 new apps installed, Soloist playing, 64 °C, started from Settings → bench row):** motion 60.0 fps, 0.1% slow, p95 17.3 ms, worst 29.5 ms, 1790 frames; idle 60.1 fps, 0.6% slow, p95 16.8 ms, worst 25.1 ms; pass.
+
+**Tests:** Mac 372 + helper 57/9 + script 37; pitv 380.
+
+**Finding:** the Home "B" bench shortcut is the keyboard letter b only (not the DualSense B/Circle or a remote key). With the remote use Settings → the panel with resolution/input-debug → third row.
+
+## M5.5 spike report (2026-10-26, Job 1.1; moved from AGENT_JOBS.md)
+Job 1.1, 2026-10-26. Nothing on pitv was changed. Facts below are command output from pitv unless a URL is given; "UNVERIFIED" = needs the proof runs in "Commands for Laith". Web-site TV usability could not be tested without launching on the TV.
+
+**Box facts:** aarch64, kernel 6.18.50+rpt-rpi-2712, PAGESIZE 16384, Trixie, Chromium `1:155.0.8059.79-1~deb13u1+rpt1` (Raspberry Pi build; `rpi-chromium-mods` installed), flatpak 1.16.6 with user remote `flathub`, 87 GB free. No `/opt/WidevineCdm` yet. Installed flatpaks: Jellyfin Desktop, KDE Platform 6.10, Mesa GL 25.08(+extra), codecs-extra. KDE 6.11 and 5.15-25.08 runtimes are NOT installed (first install of RetroArch/Moonlight/chiaki-ng pulls KDE 6.11, VLC pulls 5.15-25.08).
+
+### Candidate table
+| Candidate | Route | aarch64 | Root | Size (dl / installed) | Fullscreen | app_id | Sign-in | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| Spotify | open.spotify.com in kiosk Chromium + Widevine | yes (web) | yes, Widevine apt (allowlist set) | 7.5 MB deb | kiosk | `lumen-spotify` | keyboard once, profile keeps it | SHIP, pending Widevine proof (S1) |
+| RetroArch | Flatpak `org.libretro.RetroArch` + cores from buildbot | yes | no | 397.5 / 749 MB (+KDE 6.11) | `retroarch --fullscreen` | UNVERIFIED (expect `org.libretro.RetroArch`) | none | SHIP (S2) |
+| Moonlight | Flatpak `com.moonlight_stream.Moonlight` | yes | no | 7.1 / 15.2 MB (+KDE 6.11) | `moonlight` (fullscreen toggle in app; UNVERIFIED flag) | UNVERIFIED | PC pairing PIN once (keyboard or phone-less: needs mouse/keys) | SHIP, note: Pi 5 has no H.264 HW decode, 1080p60 software H.264 is a risk |
+| chiaki-ng | Flatpak `io.github.streetpea.Chiaki4deck` (id verified) | yes | no | 232.8 / 637 MB | UNVERIFIED | UNVERIFIED | PSN login + console pairing, needs keyboard once | SHIP-conditional, heavy, Gate proof at TV |
+| VLC | Flatpak `org.videolan.VLC` | yes | no | 51.6 / 157.6 MB (+KDE 5.15 runtime) | `--fullscreen` | UNVERIFIED | none | SHIP, desktop UI is weak on pad; plays files/streams via keys |
+| Audiobookshelf | web `http://192.168.5.174:13378` (HTTP 200 from pitv) | yes (web) | no | 0 | kiosk | `lumen-audiobookshelf` | keyboard once | SHIP, `pause_on_home=false` useful |
+| YouTube Music | web `music.youtube.com`, GoogleTV UA + youtube-tv extension idea | yes | no | 0 | kiosk | `lumen-ytmusic` | keyboard once | SHIP-conditional (UA/TV UI UNVERIFIED) |
+| Twitch | web `twitch.tv` | yes | no | 0 | kiosk | `lumen-twitch` | optional | CONDITIONAL: no known TV UI, arrow nav likely poor; test at TV, drop if unusable |
+| Pluto TV / Tubi | web, TV UA | yes | no | 0 | kiosk | `lumen-pluto`, `lumen-tubi` | none | CONDITIONAL, UNVERIFIED TV layout; propose both as the "1-3 more" |
+| Netflix / Disney+ | web + Widevine L3 | yes | Widevine | 0 | kiosk | n/a | keyboard | DROP unless Widevine works; even then Linux Chromium caps ~720p and these sites have no arrow-key TV nav (UNVERIFIED) |
+| Spotify official client | `com.spotify.Client` | NO: `flatpak remote-info --arch=aarch64 flathub com.spotify.Client` -> "Can't find ref"; flathub.org lists x86_64 only (https://flathub.org/apps/com.spotify.Client); snap/apt are amd64 | | | | | | DROP (dead end) |
+| Kodi Flatpak | `tv.kodi.Kodi` exists (581 MB) | yes | | | | | | DROP (apt Kodi entry already exists, scope says so) |
+
+Count: Spotify, RetroArch, Moonlight, VLC, Audiobookshelf are the firm five; chiaki-ng, YouTube Music, Pluto, Tubi, Twitch make 10 if the conditionals pass. Need >= 8, so expect a few TV checks before the final cut.
+
+### S1 Spotify route
+- Options: (a) official client: dead end (above). (b) open.spotify.com in Chromium + Widevine. (c) box64/Waydroid/librespot TUI: not needed unless (b) fails; box64 not in apt (`apt-cache policy box64` empty), snapd exists but Spotify snap is amd64; raspotify/librespot receivers do not meet the Gate (no lyrics app).
+- Evidence for (b): Raspberry Pi repo has `libwidevinecdm0 4.10.2662.3+1` for arm64 (candidate, not installed; `apt-cache show`, Depends libc6, libnspr4; Maintainer raspberrypi.com). I downloaded the deb on the Mac: it installs to `/opt/WidevineCdm/{manifest.json,gmp-widevinecdm/latest/libwidevinecdm.so}`; the .so's LOAD segments are 64 KiB aligned, so it should map on 16K pages (page-size change probably NOT needed; only a proof run confirms). Pi build of Chromium 155 is the one Raspberry Pi pairs with this package (Tom's Hardware, https://www.tomshardware.com/news/raspberry-pi-widevine, tested on Pi 4 only; no source found for Pi 5 + 16K, so UNVERIFIED). Widevine on Linux is L3: expect <= 720p video (irrelevant for Spotify audio).
+- Install: allowlist set `[widevine]`/`[spotify]` install = `["libwidevinecdm0"]`, remove = same, `root: true` (PIN pad). Or Laith by SSH.
+- Connect device: the web player registers as a Connect device; name is the browser name, expected "Web Player (Chromium)" (UNVERIFIED, from memory; the proof run reads it). Needs EME so Widevine must load.
+- Lyrics: no documented keyboard shortcut (Spotify shortcuts page https://support.spotify.com/na-af/article/keyboard-shortcuts/ shows none for lyrics that I could see). Needs a small MV3 extension `config/browser/spotify-tv` (like youtube-tv) that clicks the lyrics button and adds focus navigation, plus a `keys` mapping. Remappable actions are only `Up Down Left Right Select Back PlayPause`, so the lyrics toggle needs one of them (e.g. PlayPause -> a key the extension reads, with play/pause done by the extension through the media key) or a new action: Laith decides.
+- Sign-in: keyboard once in the per-app profile (`~/.local/share/lumen-tv/browser/spotify`), cookies persist (same as Jellyfin/YouTube profiles).
+- Kernel: none expected. If the proof fails on 16K, `kernel=kernel8.img` is a box-wide change needing a re-bench (config.txt has no kernel= line today).
+- **Recommendation:** ship Spotify as web + `libwidevinecdm0` through the root helper + extension, `keep-alive`, `pause_on_home = false`; run the proof first. If Widevine does not load, write "can't ship" (the Gate allows it).
+
+### S2 RetroArch
+- Options: Flatpak `org.libretro.RetroArch` (stable, KDE 6.11, aarch64 build exists; metadata: `devices=all`, `filesystems=host;/run/udev:ro`, sockets wayland+pulseaudio+fallback-x11) vs apt `retroarch 1.20.0+dfsg-2+b1` (23 MB, Qt5/GLES deps, cores via apt `libretro-mgba 0.10.5`, `libretro-gambatte` 2016, `libretro-desmume` 2016; no melonDS in apt; apt cores are exactly the `[kodi]` remove set).
+- Cores: Flatpak ships none bundled (the flathub page says to install cores with the Online Updater, https://github.com/flathub/org.libretro.RetroArch). libretro buildbot has aarch64 nightlies: `https://buildbot.libretro.com/nightly/linux/aarch64/latest/{mgba,gambatte,melonds,desmume}_libretro.so.zip` (listing fetched). Install step can fetch these with curl+unzip into `~/.var/app/org.libretro.RetroArch/config/retroarch/cores` with no root. UNVERIFIED: that the nightly .so loads inside the KDE 6.11 runtime, melonDS speed on Pi 5, and DS needs no firmware (melonDS has HLE BIOS).
+- ROMs: Flatpak already has `filesystems=host`, so `~/roms` is readable with no `flatpak override`; browse via Load Content or a playlist. Saves go under `~/.var/app/org.libretro.RetroArch/` (never `~/.kodi`).
+- Controller: Flatpak notes "Upstream udev support for Flatpak isn't quite there yet", falls back to the SDL joypad driver (autoconfig subset; DualSense UNVERIFIED), so a shipped `retroarch.cfg` with `input_joypad_driver = "sdl2"`/Menu binds may be needed. RetroArch reads the pad itself (like Steam Link), so Lumen's PS tap = Home may not apply while it is in front: the Gate says red = Home, which works from the remote.
+- Fullscreen/lifecycle: `flatpak run org.libretro.RetroArch --fullscreen`; app_id UNVERIFIED (check with `examples/toplevels.rs` during the loop); Flatpak wrapper: set `process` if the launcher exits. `close-on-exit` + `exclusive = false`.
+- `[kodi]` conflict: using Flatpak removes it: Kodi's install/remove lists stay untouched and no apt libretro package is shared.
+- GPU: Pi 5 Flatpak GL uses Mesa `org.freedesktop.Platform.GL.default 26.2.4` (installed); Jellyfin Desktop had no GPU in IN-PROGRESS (2026-10-09) so check RetroArch with `glcore`/`gl` driver at the TV: UNVERIFIED.
+- **Recommendation:** Flatpak + user-level core download in the install step (mGBA, Gambatte, melonDS), no root, `[kodi]` set unchanged. Fallback if cores or GPU fail: apt RetroArch with its own `[retroarch]` set that does NOT list `libretro-*` in remove (mgba/gambatte/desmume would then be shared with `[kodi]`; needs a decision first).
+
+### S3 Final catalogue
+- Ship (new): spotify (web, root: widevine), retroarch (Flatpak, no root, games), moonlight (Flatpak, games), vlc (Flatpak, media), audiobookshelf (web, media/music). Conditional, decide at the TV: chiaki-ng (games), ytmusic (web, music), twitch (web, video), pluto, tubi (web, video). Categories suggested: Media, Music, Games, Utilities.
+- Drop: official Spotify, Kodi Flatpak, Netflix/Disney+ (unless Widevine proof + nav).
+- Stale to remove: `kolourpaint`, `store-test`, `root-test` (+ `[root-test]`). Others: airplay description says "Uninstalling removes the tile and leaves the shared packages", fine. jellyfin and youtube remain valid, Jellyfin hard-codes `192.168.5.174` (M6). steamlink and kodi entries valid. `airplay` allowlist remove = [] so Store uninstall leaves packages: ok. Also `kodi` description mentions `~/roms` and the Games gap; add a note that RetroArch is the game player now.
+
+### S4 Schema additions
+- `arch`: needed? Only if a non-aarch64 entry ships; all candidates are aarch64 or web, so low value now but required for M6 and cheap: recommend yes.
+- `category` + Store sections: yes, 10+ entries will not fit one screen.
+- `notes`: yes (Moonlight pairing, chiaki PSN login, Spotify keyboard sign-in, RetroArch core download and where ROMs are).
+- `pause_on_home`: yes (Spotify and Audiobookshelf must keep playing; `apps::pause_media` pauses today).
+- Post-install steps: RetroArch core download fits inside `install` (multiple sh steps), no new key. Flatpak override not needed (`host` filesystem).
+- Missing for Spotify: a way to bind lyrics to a key (see S1), and a Chromium launch without `--kiosk` issues? none known. Per-entry `user_agent`/`browser_args`/`keys` already exist.
+- **Recommendation:** add `category`, `notes`, `arch`, `pause_on_home`; no post-install key.
+
+### S5 Test fixtures
+- Put kolourpaint/store-test/root-test in `store/fixtures/test-manifest.json`; use `--store-check store/fixtures/test-manifest.json` and `LUMEN_STORE_URL=/home/laith/lumen-tv/store/fixtures/test-manifest.json`. Root-path coverage: `helper/tests/socket.rs` and `installer.rs` already use inline `root-test` fixtures; the shipped-allowlist test just asserts the name is absent. The root PIN path can still be run manually on pitv by adding `[root-test]` to a local allowlist copy, which is a Laith/sudo step.
+- Installed test apps on pitv: none. `~/.config/lumen-tv/store/` is empty, `~/.config/lumen-tv/apps/` has only airplay, jellyfin, steamlink, youtube; `dpkg -s sl` = not installed; `flatpak list --user` has no kolourpaint (leftover data only: `~/.var/app/org.kde.kolourpaint` 128 KB, harmless). So the manifest change can go live with nothing to uninstall first.
+- **Recommendation:** as above; leave the 128 KB leftover alone.
+
+### Commands for Laith (nothing run by me)
+1. Widevine proof (root): `sudo apt install -y libwidevinecdm0` then `ls /opt/WidevineCdm/gmp-widevinecdm/latest/`; proves the package installs on Trixie arm64/16K. Then, with Laith's OK, launch a Chromium kiosk on the TV at `https://open.spotify.com` (own profile dir, keyboard attached) and play a track: playback without "Playback of protected content is not enabled" proves Widevine loads on the 16K kernel. Also read the Connect device name on the phone.
+2. Lyrics proof: open a song with lyrics, click the mic icon; note the DOM selector (`data-testid`) via DevTools for the extension.
+3. Remove after the proof (optional): `sudo apt remove -y libwidevinecdm0`.
+4. RetroArch core proof (no root, writes to Pi, so Laith approves): `flatpak install --user -y --noninteractive flathub org.libretro.RetroArch`, then `curl -L -o /tmp/mgba.zip https://buildbot.libretro.com/nightly/linux/aarch64/latest/mgba_libretro.so.zip` and unzip into `~/.var/app/org.libretro.RetroArch/config/retroarch/cores/`; launch on the TV and load the GBA ROM. Proves the nightly core loads, GPU works, DualSense autoconfig.
+
+### Read-only commands run on pitv
+`uname -a; getconf PAGESIZE; grep os-release; grep config.txt (kernel/dtoverlay lines); chromium --version; apt-cache policy chromium libwidevinecdm0 retroarch flatpak vlc moonlight-qt chiaki-ng libretro-*; apt-cache show libwidevinecdm0|retroarch|chromium; apt-cache rdepends libwidevinecdm0; apt-cache search libretro; dpkg -l | grep ...; dpkg -L rpi-chromium-mods; dpkg -S /usr/lib/chromium/chromium; dpkg -s sl; df -h ~; free -m; flatpak remotes --user; flatpak list --user; flatpak remote-ls --user --arch=aarch64 flathub --columns=application; flatpak remote-info --user [--arch=aarch64] [--show-metadata] flathub <RetroArch|Moonlight|Chiaki4deck|VLC|Kodi|com.spotify.Client>; ls ~/.config/lumen-tv/{store,apps}; ls ~/.local/share/lumen-tv/browser ~/.var/app ~/roms/*; cat settings.toml env; curl -sI http://192.168.5.174:{13378,8096}/ ; cat /proc/bus/input/devices | grep Name; du -sh ~/.var/app/org.kde.kolourpaint; ls /dev/input`. On the Mac: curl of the Widevine deb and ELF header read (scratchpad only), curl of buildbot.libretro.com listings, WebSearch/WebFetch.

@@ -39,6 +39,8 @@ pub struct Spec {
     pub id: String,
     pub exclusive: bool,
     pub keep_alive: bool,
+    /// false: Home leaves a keep-alive app playing (no `Step::Pause`).
+    pub pause_on_home: bool,
     pub app_id: Option<String>,
     /// Registry field `process`, as written (`~` not yet expanded).
     pub process: Option<String>,
@@ -50,6 +52,7 @@ impl From<&Entry> for Spec {
             id: e.id.clone(),
             exclusive: e.exclusive,
             keep_alive: e.background == Background::KeepAlive,
+            pause_on_home: e.pause_on_home,
             app_id: e.app_id.clone(),
             process: e.process.clone(),
         }
@@ -302,11 +305,14 @@ impl Lifecycle {
             return steps;
         };
         self.fg = Foreground::Lumen;
-        let keep_alive = self.spec(&id).is_some_and(|s| s.keep_alive);
-        if keep_alive {
+        let spec = self.spec(&id);
+        if spec.is_some_and(|s| s.keep_alive) {
+            if spec.is_some_and(|s| !s.pause_on_home) {
+                return vec![Step::ActivateLumen];
+            }
             // Pause first, so the sound stops as the screen switches.
             let pid = self.running.get(&id).and_then(|st| st.pid);
-            let process = self.spec(&id).and_then(|s| s.process.clone());
+            let process = spec.and_then(|s| s.process.clone());
             return vec![Step::Pause { id, pid, process }, Step::ActivateLumen];
         }
         let mut steps = vec![Step::ActivateLumen];
@@ -676,6 +682,25 @@ pub fn drop_ambient_caps(cmd: &mut Command) {
     let _ = cmd;
 }
 
+/// Where Raspberry Pi OS's `libwidevinecdm0` puts the Widevine CDM.
+pub const SYSTEM_WIDEVINE: &str = "/opt/WidevineCdm";
+
+/// Points a fresh web-app profile at the system Widevine CDM. Without the hint
+/// Chromium has no CDM on first launch (it downloads its own a minute later and
+/// only loads it after a restart), so Spotify showed songs but played nothing
+/// and never appeared as a Connect device. Leaves an existing hint alone
+/// (Chromium rewrites it when it updates the component).
+pub fn seed_widevine_hint(profile: &Path, cdm: &Path) -> std::io::Result<bool> {
+    let hint = profile.join("WidevineCdm/latest-component-updated-widevine-cdm");
+    if hint.exists() || !cdm.join("manifest.json").is_file() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(hint.parent().unwrap_or(profile))?;
+    let path = serde_json::to_string(&cdm.to_string_lossy())?;
+    std::fs::write(&hint, format!("{{\"Path\":{path}}}"))?;
+    Ok(true)
+}
+
 /// Starts the app as `sh -c 'exec ...'` in its own process group, with
 /// stdout/stderr on the journal (the originals saved by `logtail`) and Lumen's session environment. A
 /// reaper thread calls `on_exit(id, pid, code)` when the launcher exits.
@@ -686,6 +711,14 @@ pub fn spawn(
 ) -> Result<u32, String> {
     use std::os::unix::process::CommandExt;
     let line = command_line(entry, browser_cmd, &program_on_path)?;
+    let in_browser = entry.kind == Kind::Url || entry.launch.as_deref().map(str::trim) != Some(line.as_str());
+    if in_browser {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let profile = Path::new(&home).join(".local/share/lumen-tv/browser").join(&entry.id);
+        if let Err(e) = seed_widevine_hint(&profile, Path::new(SYSTEM_WIDEVINE)) {
+            eprintln!("[apps] {}: Widevine hint not written: {e}", entry.id);
+        }
+    }
     let (out, err) = crate::logtail::child_stdio();
     let mut cmd = Command::new("sh");
     cmd.arg("-c")
@@ -926,6 +959,7 @@ mod tests {
             id: id.into(),
             exclusive: false,
             keep_alive: false,
+            pause_on_home: true,
             app_id: Some(id.into()),
             process: None,
         }
@@ -1113,6 +1147,18 @@ mod tests {
         up(&mut lc, "j");
         lc.window_changed(&lumen_win(true), 30);
         assert_eq!(lc.home(true), vec![]);
+    }
+
+    #[test]
+    fn home_keep_alive_without_pause_on_home_only_returns() {
+        let mut lc = Lifecycle::new(vec![Spec {
+            pause_on_home: false,
+            ..keep("s")
+        }]);
+        up(&mut lc, "s");
+        assert_eq!(lc.home(true), vec![Step::ActivateLumen]);
+        assert!(lc.is_running("s"));
+        assert_eq!(lc.foreground(), &Foreground::Lumen);
     }
 
     #[test]
@@ -1875,5 +1921,26 @@ org.mpris.MediaPlayer2.other                  12170 foo        laith :1.121 user
             rx.recv_timeout(Duration::from_secs(5)).unwrap(),
             -libc::SIGTERM
         );
+    }
+
+    #[test]
+    fn widevine_hint_seeds_fresh_profile_once() {
+        let d = std::env::temp_dir().join(format!("lumen-apps-widevine-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (profile, cdm) = (d.join("profile"), d.join("cdm"));
+        // No CDM installed: nothing written.
+        assert!(!seed_widevine_hint(&profile, &cdm).unwrap());
+        assert!(!profile.exists());
+        std::fs::create_dir_all(&cdm).unwrap();
+        std::fs::write(cdm.join("manifest.json"), "{}").unwrap();
+        assert!(seed_widevine_hint(&profile, &cdm).unwrap());
+        let hint = profile.join("WidevineCdm/latest-component-updated-widevine-cdm");
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&hint).unwrap()).unwrap();
+        assert_eq!(v["Path"], cdm.to_string_lossy().as_ref());
+        // Chromium's own (newer) hint is kept.
+        std::fs::write(&hint, "{\"Path\":\"/x\"}").unwrap();
+        assert!(!seed_widevine_hint(&profile, &cdm).unwrap());
+        assert_eq!(std::fs::read_to_string(&hint).unwrap(), "{\"Path\":\"/x\"}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

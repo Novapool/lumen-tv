@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "apps": [
+    {
+      "id": "kolourpaint",
+      "name": "KolourPaint",
+      "launch": "flatpak run org.kde.kolourpaint",
+      "background": "close-on-exit",
+      "app_id": "org.kde.kolourpaint",
+      "icon": "org.kde.kolourpaint",
+      "glyph": "P",
+      "colors": ["#1d3557", "#e63946"],
+      "order": 50,
+      "description": "Simple paint program from KDE. A small Flatpak, installed for the current user only.",
+      "detail": "Flatpak (user)",
+      "install": ["flatpak install --user -y --noninteractive flathub org.kde.kolourpaint"],
+      "uninstall": ["flatpak uninstall --user -y --noninteractive org.kde.kolourpaint"]
+    },
+    {
+      "id": "store-test",
+      "name": "Store test (fails)",
+      "launch": "flatpak run org.lumen.DoesNotExist",
+      "background": "close-on-exit",
+      "glyph": "!",
+      "colors": ["#4a1010", "#b3261e"],
+      "order": 90,
+      "description": "Exists only to test the error path: the install step names a Flatpak that does not exist, so it fails and Lumen writes no app entry.",
+      "detail": "Flatpak (user)",
+      "install": ["flatpak install --user -y --noninteractive flathub org.lumen.DoesNotExist"],
+      "uninstall": ["flatpak uninstall --user -y --noninteractive org.lumen.DoesNotExist"]
+    },
+    {
+      "id": "root-test",
+      "name": "Root test",
+      "launch": "true",
+      "background": "close-on-exit",
+      "glyph": "R",
+      "colors": ["#2b2b2e", "#8e8e93"],
+      "order": 95,
+      "description": "Only exercises the PIN + root helper path: installs and removes the tiny package sl. It launches nothing.",
+      "detail": "apt (root)",
+      "root": true,
+      "install": ["sudo apt install -y sl"],
+      "uninstall": ["sudo apt remove -y sl"]
+    },
+    {
+      "id": "notile-test",
+      "name": "No-tile test",
+      "glyph": "N",
+      "colors": ["#2b2b2e", "#6c6c70"],
+      "order": 96,
+      "tile": false,
+      "description": "Only exercises an entry without a Home tile: the steps do nothing, and Lumen writes just the receipt (no app entry).",
+      "detail": "no tile",
+      "install": ["true"],
+      "uninstall": ["true"]
+    }
+  ]
+}

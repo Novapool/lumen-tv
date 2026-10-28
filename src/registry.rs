@@ -5,7 +5,7 @@
 // Settings screen), never fatal.
 //
 // Fields (BRIEF s5 plus Lumen additions): id, name, type, launch, url,
-// fallback_url, background, exclusive, icon, app_id, glyph, colors, order, and
+// fallback_url, background, pause_on_home, exclusive, icon, app_id, glyph, colors, order, and
 // `process`: the path (or comm) of the app's real executable, for launchers
 // that exit at once (Steam Link). Resolving `icon` belongs to icons.rs.
 // `user_agent` / `browser_args` tune the kiosk browser line (apps.rs); `keys`
@@ -69,6 +69,10 @@ pub struct Entry {
     #[serde(default)]
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub exclusive: bool,
+    /// Keep-alive apps only: `false` leaves the media playing when Home is
+    /// pressed (no MPRIS Pause). Default `true`; written only when `false`.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub pause_on_home: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// Wayland app_id / X11 class of the app's windows.
@@ -98,22 +102,23 @@ pub struct Entry {
     pub keys: Option<BTreeMap<String, String>>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
 impl Entry {
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    /// The checks every entry shares: id, name, glyph and colors. Store apps
+    /// without a tile (`tile: false`) are validated by this alone.
+    pub(crate) fn validate_identity(&self) -> Result<(), String> {
         if self.id.is_empty() || !self.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
             return Err(format!("id {:?} may only use letters, digits, - and _", self.id));
         }
         if self.name.trim().is_empty() {
             return Err("name is empty".into());
-        }
-        let blank = |o: &Option<String>| o.as_deref().is_none_or(|s| s.trim().is_empty());
-        match self.kind {
-            Kind::Command if blank(&self.launch) => return Err("type \"command\" needs a launch line".into()),
-            Kind::Url if blank(&self.url) => return Err("type \"url\" needs a url".into()),
-            _ => {}
-        }
-        if self.process.as_deref().is_some_and(|s| s.trim().is_empty()) {
-            return Err("process is empty".into());
         }
         if let Some(g) = &self.glyph {
             if !(1..=2).contains(&g.chars().count()) {
@@ -127,6 +132,23 @@ impl Entry {
             if let Some(c) = colors.iter().find(|c| !is_hex_color(c)) {
                 return Err(format!("color {c:?} should look like \"#rrggbb\""));
             }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        self.validate_identity()?;
+        let blank = |o: &Option<String>| o.as_deref().is_none_or(|s| s.trim().is_empty());
+        match self.kind {
+            Kind::Command if blank(&self.launch) => return Err("type \"command\" needs a launch line".into()),
+            Kind::Url if blank(&self.url) => return Err("type \"url\" needs a url".into()),
+            _ => {}
+        }
+        if !self.pause_on_home && self.background != Background::KeepAlive {
+            return Err("pause_on_home = false only means something with background = \"keep-alive\"".into());
+        }
+        if self.process.as_deref().is_some_and(|s| s.trim().is_empty()) {
+            return Err("process is empty".into());
         }
         self.validate_browser_fields()?;
         if let Some(keys) = &self.keys {
@@ -375,6 +397,7 @@ mod tests {
         assert_eq!(e.kind, Kind::Command);
         assert_eq!(e.background, Background::CloseOnExit);
         assert!(!e.exclusive);
+        assert!(e.pause_on_home);
         assert!(e.app_id.is_none() && e.process.is_none() && e.order.is_none());
     }
 
@@ -598,6 +621,20 @@ mod tests {
         let a = parse("airplay.toml", include_str!("../config/apps/airplay.toml")).unwrap();
         assert_eq!(a.background, Background::CloseOnExit);
         assert!(!a.exclusive && a.keys.is_none());
+    }
+
+    #[test]
+    fn pause_on_home_false_needs_keep_alive_and_round_trips_only_when_false() {
+        let base = "id = \"a\"\nname = \"A\"\nlaunch = \"a\"\n";
+        let e = parse("a.toml", &format!("{base}background = \"keep-alive\"\npause_on_home = false\n")).unwrap();
+        assert!(!e.pause_on_home);
+        assert!(toml::to_string(&e).unwrap().contains("pause_on_home = false"));
+        let d = parse("a.toml", &format!("{base}background = \"keep-alive\"\n")).unwrap();
+        assert!(d.pause_on_home);
+        assert!(!toml::to_string(&d).unwrap().contains("pause_on_home"));
+        assert!(parse("a.toml", &format!("{base}pause_on_home = false\n")).is_err());
+        assert!(parse("a.toml", &format!("{base}pause_on_home = true\n")).is_ok());
+        assert!(parse("a.toml", &format!("{base}background = \"keep-alive\"\npause_on_home = \"no\"\n")).is_err());
     }
 
     const URL_BASE: &str = "id = \"a\"\nname = \"A\"\ntype = \"url\"\nurl = \"http://x\"\n";

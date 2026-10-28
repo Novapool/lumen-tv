@@ -115,6 +115,13 @@ export component DetailsScreen inherits Rectangle {
                 wrap: word-wrap;
             }
 
+            if !root.confirm && root.item.notes != "": Text {
+                text: "Setup: " + root.item.notes;
+                font-size: 1.3 * root.rem;
+                color: Theme.text;
+                wrap: word-wrap;
+            }
+
             // What the tile will run once installed (never elided).
             if root.item.launch != "": Text {
                 text: "Launches: " + root.item.launch;

@@ -185,7 +185,10 @@ mod tests {
     fn shipped_allowlist_parses_and_keeps_its_safety_properties() {
         let a = parse(include_str!("../../session/helper-allowlist.toml")).unwrap();
         let ids: Vec<_> = a.keys().map(String::as_str).collect();
-        assert_eq!(ids, ["airplay", "kodi", "root-test", "steamlink"]);
+        assert!(!ids.contains(&"root-test"), "test sets must not ship in the allowlist");
+        for id in ["airplay", "kodi", "steamlink"] {
+            assert!(ids.contains(&id), "{id} missing");
+        }
         // AirPlay's packages are shared with Lumen's tile and other things: never removable.
         assert!(a["airplay"].remove.is_empty());
         // Kodi: apt must not be free to pull RetroArch in or take extra packages out, so every

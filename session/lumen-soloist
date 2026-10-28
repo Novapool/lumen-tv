@@ -1,0 +1,395 @@
+#!/bin/sh
+# Spotify Connect receiver (Spotify's headless "Soloist") for a Lumen box.
+# Run as: sh ~/lumen-tv/session/lumen-soloist [--dry-run] <command>
+#
+#   install            download Soloist, write the user units, enable the weekly update timer
+#   update [--force]   re-download; swap and restart only when the binary changed (or --force)
+#   uninstall [--purge]  remove binary + units; keeps the key and login state unless --purge
+#   set-key            read the Spotify developer API key from stdin (not echoed) and store it
+#   status             one-screen summary (never prints the key)
+#
+# --dry-run prints every action and changes nothing (no network, no systemctl).
+# No root is needed: everything lives under $HOME and runs as systemd user units.
+# The Soloist binary is Spotify's, covered by Spotify's terms; it is downloaded on the box
+# and never shipped with Lumen.
+set -eu
+
+URL="https://soloist-builds.spotifycdn.com/soloist_release_arm64.tar.gz"
+
+die() {
+    printf 'lumen-soloist: %s\n' "$*" >&2
+    exit 1
+}
+
+case $0 in
+    /*) SELF=$0 ;;
+    *) SELF=$(cd "$(dirname -- "$0")" && pwd)/$(basename -- "$0") ;;
+esac
+
+[ -n "${HOME:-}" ] || die "HOME is not set"
+LIB="$HOME/.local/lib/soloist"
+BIN="$LIB/soloist"
+KEYDIR="$HOME/.config/soloist"
+KEY="$KEYDIR/key"
+STATE="$HOME/.local/share/soloist"
+CACHE="$HOME/.cache/soloist"
+UNITDIR="$HOME/.config/systemd/user"
+SVC="soloist.service"
+UPD_SVC="soloist-update.service"
+UPD_TIMER="soloist-update.timer"
+
+DRY=0
+FORCE=0
+PURGE=0
+CMD=""
+for a in "$@"; do
+    case $a in
+        --dry-run) DRY=1 ;;
+        --force) FORCE=1 ;;
+        --purge) PURGE=1 ;;
+        -*) die "unknown option: $a" ;;
+        *) [ -z "$CMD" ] || die "unexpected argument: $a"; CMD=$a ;;
+    esac
+done
+[ "$FORCE" = 0 ] || [ "$CMD" = update ] || die "--force only applies to update"
+[ "$PURGE" = 0 ] || [ "$CMD" = uninstall ] || die "--purge only applies to uninstall"
+[ -n "$CMD" ] || die "usage: lumen-soloist [--dry-run] install|update [--force]|uninstall [--purge]|set-key|status"
+
+# systemctl --user needs the user bus; a Store step has no login session env.
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    export XDG_RUNTIME_DIR
+fi
+
+say() { printf '%s\n' "$*"; }
+
+# act: run a command, or only print it under --dry-run.
+act() {
+    if [ "$DRY" = 1 ]; then
+        say "[dry-run] $*"
+    else
+        "$@"
+    fi
+}
+
+# sc: systemctl --user; failures are the caller's business.
+sc() { act systemctl --user "$@"; }
+
+# Reads (never run under --dry-run; callers guard).
+is_active() { systemctl --user is-active --quiet "$SVC" 2>/dev/null; }
+
+TMP=""
+cleanup() {
+    [ -z "$TMP" ] || rm -rf "$TMP"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# ---- unit files ---------------------------------------------------------------
+
+unit_soloist() {
+    cat <<'EOF'
+[Unit]
+Description=Spotify Soloist (Spotify Connect receiver, named after this box)
+After=pipewire.service pipewire-pulse.service wireplumber.service network-online.target
+Wants=pipewire.service
+# Without a key Soloist can't start: don't restart-loop, wait for `lumen-soloist set-key`.
+ConditionPathExists=%h/.config/soloist/key
+
+[Service]
+# Soloist only announces the addresses it sees at start, and a user unit can't wait for
+# network-online.target: wait (max 60 s) for an IPv4 address (wlan0 if it exists, else any).
+ExecStartPre=/bin/sh -c 'for i in $(seq 60); do if [ -d /sys/class/net/wlan0 ]; then ip -4 -o addr show wlan0 | grep -q inet && exit 0; else ip -4 -o addr show scope global | grep -q inet && exit 0; fi; sleep 1; done; exit 0'
+# Device name = hostname (%H). WebSocket API on loopback (lumen-karaoke connects there).
+# Soloist takes the key only via -k (no env var or key file option), so it comes from the 0600 key file.
+# Exit code 10 = build expired: the weekly soloist-update.timer re-downloads it.
+ExecStart=/bin/sh -c 'exec %h/.local/lib/soloist/soloist -n %H -z 300 -w 127.0.0.1:9090 -k "$(cat %h/.config/soloist/key)"'
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=10
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+unit_update_service() {
+    cat <<EOF
+[Unit]
+Description=Update the Spotify Soloist binary (Lumen)
+
+[Service]
+Type=oneshot
+TimeoutStartSec=15min
+ExecStart=/bin/sh "$SELF" update
+EOF
+}
+
+unit_update_timer() {
+    cat <<'EOF'
+[Unit]
+Description=Weekly Spotify Soloist update check (builds expire after 90 days)
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+UNITS_CHANGED=0
+# put_unit <file name> <generator function>
+put_unit() {
+    _dest="$UNITDIR/$1"
+    if [ "$DRY" = 1 ]; then
+        say "[dry-run] write $_dest:"
+        "$2" | sed 's/^/    | /'
+        return 0
+    fi
+    "$2" > "$TMP/unit.new"
+    if [ -f "$_dest" ] && cmp -s "$TMP/unit.new" "$_dest"; then
+        say "unit unchanged: $_dest"
+    else
+        mv -f "$TMP/unit.new" "$_dest"
+        chmod 644 "$_dest"
+        UNITS_CHANGED=1
+        say "wrote $_dest"
+    fi
+}
+
+# ---- download -----------------------------------------------------------------
+
+BIN_CHANGED=0
+
+# fetch: download + unpack + verify into $TMP/x; leaves any existing install untouched.
+fetch() {
+    mkdir -p "$TMP/x"
+    say "downloading $URL"
+    curl --proto '=https' --tlsv1.2 -fL --retry 2 --connect-timeout 20 \
+        --speed-limit 1024 --speed-time 60 --max-time 900 -sS -o "$TMP/soloist.tgz" "$URL" \
+        || die "download failed; the installed Soloist (if any) was left as it was"
+    tar -xzf "$TMP/soloist.tgz" -C "$TMP/x" || die "could not unpack the download"
+    [ -f "$TMP/x/soloist" ] || die "the download has no soloist binary"
+    chmod 755 "$TMP/x/soloist"
+    # aarch64 ELF: magic 7f 45 4c 46, e_machine (offset 18, little endian) = 0xb7 0x00.
+    _magic=$(od -An -v -tx1 -N4 "$TMP/x/soloist" | tr -d ' \n')
+    _mach=$(od -An -v -tx1 -j18 -N2 "$TMP/x/soloist" | tr -d ' \n')
+    [ "$_magic" = "7f454c46" ] || die "the downloaded soloist is not an ELF binary"
+    [ "$_mach" = "b700" ] || die "the downloaded soloist is not an aarch64 binary"
+}
+
+# swap_in: copy the fetched files next to the target, then rename into place (atomic per file;
+# a running Soloist keeps its old inode until restarted).
+swap_in() {
+    mkdir -p "$LIB"
+    BIN_CHANGED=0
+    if [ ! -f "$BIN" ] || ! cmp -s "$TMP/x/soloist" "$BIN"; then
+        BIN_CHANGED=1
+    fi
+    if [ "$BIN_CHANGED" = 1 ] || [ "$FORCE" = 1 ]; then
+        cp "$TMP/x/soloist" "$LIB/.soloist.new"
+        chmod 755 "$LIB/.soloist.new"
+        mv -f "$LIB/.soloist.new" "$BIN"
+    fi
+    for f in CHANGELOG.md THIRD_PARTY_LICENSES.txt; do
+        if [ -f "$TMP/x/$f" ]; then
+            cp "$TMP/x/$f" "$LIB/.$f.new"
+            mv -f "$LIB/.$f.new" "$LIB/$f"
+        fi
+    done
+}
+
+need_arch() {
+    _m=$(uname -m)
+    if [ "$_m" != "aarch64" ]; then
+        if [ "$DRY" = 1 ]; then
+            say "[dry-run] note: this machine is $_m; a real run would refuse (aarch64 only)"
+        else
+            die "Soloist is only published for aarch64; this machine is $_m"
+        fi
+    fi
+}
+
+mktmp() {
+    TMP=$(mktemp -d "${TMPDIR:-/tmp}/lumen-soloist.XXXXXX")
+}
+
+# ---- commands -----------------------------------------------------------------
+
+cmd_install() {
+    need_arch
+    if [ "$DRY" = 1 ]; then
+        say "[dry-run] download $URL (curl --proto '=https' -fL) into a temp dir, unpack, verify an aarch64 ELF"
+        say "[dry-run] install the binary and its notices into $LIB (existing install kept until the swap)"
+    else
+        mktmp
+        fetch
+        swap_in
+        mkdir -p "$UNITDIR"
+        say "installed $BIN"
+    fi
+    put_unit "$SVC" unit_soloist
+    put_unit "$UPD_SVC" unit_update_service
+    put_unit "$UPD_TIMER" unit_update_timer
+    sc daemon-reload
+    sc enable --now "$UPD_TIMER"
+    sc enable "$SVC"
+    if [ "$DRY" = 1 ]; then
+        say "[dry-run] if $KEY exists: start $SVC (restart only if it was active and the binary or unit changed)"
+        say "[dry-run] otherwise: print 'waiting for a key (run set-key over SSH)'"
+        return 0
+    fi
+    if [ -f "$KEY" ]; then
+        if is_active; then
+            if [ "$BIN_CHANGED" = 1 ] || [ "$UNITS_CHANGED" = 1 ]; then
+                sc restart "$SVC"
+                say "restarted $SVC (binary or unit changed)"
+            else
+                say "$SVC already running with the same files; not restarted"
+            fi
+        else
+            sc start "$SVC"
+        fi
+        say "running: $SVC is $(systemctl --user is-active "$SVC" 2>/dev/null || true)"
+    else
+        say "waiting for a key: run  sh $SELF set-key  over SSH and paste your Soloist API key"
+    fi
+}
+
+cmd_update() {
+    need_arch
+    if [ "$DRY" = 0 ] && [ ! -f "$UNITDIR/$SVC" ]; then
+        die "not installed (run install first)"
+    fi
+    if [ "$DRY" = 1 ]; then
+        say "[dry-run] download $URL into a temp dir, unpack, verify"
+        say "[dry-run] if the binary equals $BIN: do nothing (unless --force)"
+        say "[dry-run] else swap it in and restart $SVC if it is active or last exited with status 10"
+        return 0
+    fi
+    mktmp
+    fetch
+    swap_in
+    if [ "$BIN_CHANGED" = 0 ] && [ "$FORCE" = 0 ]; then
+        say "unchanged, no restart"
+        return 0
+    fi
+    say "updated $BIN"
+    _restart=0
+    if is_active; then
+        _restart=1
+    else
+        _st=$(systemctl --user show "$SVC" -p ExecMainStatus --value 2>/dev/null || true)
+        [ "$_st" != "10" ] || _restart=1
+    fi
+    # Never start a unit that has no key (its ConditionPathExists would skip it anyway).
+    if [ "$_restart" = 1 ]; then
+        sc reset-failed "$SVC" || true
+        sc restart "$SVC"
+        say "restarted $SVC"
+    else
+        say "$SVC is not running; left stopped"
+    fi
+}
+
+cmd_uninstall() {
+    sc stop "$SVC" || true
+    sc stop "$UPD_TIMER" || true
+    sc stop "$UPD_SVC" || true
+    sc disable "$SVC" "$UPD_TIMER" || true
+    act rm -f "$UNITDIR/$SVC" "$UNITDIR/$UPD_SVC" "$UNITDIR/$UPD_TIMER"
+    # stale enablement links, if disable could not remove them
+    act rm -f "$UNITDIR/default.target.wants/$SVC" "$UNITDIR/timers.target.wants/$UPD_TIMER"
+    act rm -rf "$LIB"
+    sc daemon-reload || true
+    sc reset-failed "$SVC" "$UPD_SVC" "$UPD_TIMER" || true
+    if [ "$PURGE" = 1 ]; then
+        act rm -rf "$KEYDIR" "$STATE" "$CACHE"
+        say "purged the key ($KEYDIR), the login state ($STATE) and the cache ($CACHE)"
+    else
+        say "kept your key ($KEY) and login state ($STATE); add --purge to remove them"
+    fi
+    say "uninstalled Soloist"
+}
+
+TTY_SAVED=""
+restore_tty() {
+    if [ -n "$TTY_SAVED" ]; then
+        stty "$TTY_SAVED" 2>/dev/null || stty echo 2>/dev/null || true
+        TTY_SAVED=""
+    fi
+}
+
+cmd_set_key() {
+    if [ "$DRY" = 1 ]; then
+        say "[dry-run] read one line from stdin (no echo on a terminal), trim it, refuse empty/multi-line input"
+        say "[dry-run] write it to $KEY (dir 0700, file 0600, via a temp file and mv)"
+        sc enable "$SVC"
+        sc restart "$SVC"
+        return 0
+    fi
+    [ -f "$UNITDIR/$SVC" ] || die "Soloist is not installed; run install first"
+    k=""
+    if [ -t 0 ]; then
+        printf 'Paste your Soloist API key (not shown), then press Enter: ' >&2
+        TTY_SAVED=$(stty -g)
+        trap 'restore_tty; exit 130' INT
+        trap 'restore_tty; exit 143' TERM
+        trap 'restore_tty; cleanup' EXIT
+        stty -echo
+        IFS= read -r k || [ -n "$k" ] || true
+        restore_tty
+        printf '\n' >&2
+    else
+        IFS= read -r k || [ -n "$k" ] || true
+        extra=""
+        if IFS= read -r extra || [ -n "$extra" ]; then
+            case $extra in *[![:space:]]*) die "the key must be a single line" ;; esac
+        fi
+    fi
+    # trim surrounding whitespace (incl. a trailing CR)
+    while :; do
+        case $k in [[:space:]]*) k=${k#?} ;; *) break ;; esac
+    done
+    while :; do
+        case $k in *[[:space:]]) k=${k%?} ;; *) break ;; esac
+    done
+    [ -n "$k" ] || die "no key given"
+    old_umask=$(umask)
+    umask 077
+    mkdir -p "$KEYDIR"
+    chmod 700 "$KEYDIR"
+    kt=$(mktemp "$KEYDIR/.key.XXXXXX")
+    printf '%s\n' "$k" > "$kt"
+    chmod 600 "$kt"
+    mv -f "$kt" "$KEY"
+    umask "$old_umask"
+    k=""
+    say "key saved to $KEY"
+    sc daemon-reload
+    sc enable "$SVC"
+    sc restart "$SVC"
+    say "$SVC is $(systemctl --user is-active "$SVC" 2>/dev/null || true)"
+}
+
+cmd_status() {
+    if [ -f "$BIN" ]; then say "binary: present ($BIN)"; else say "binary: absent"; fi
+    say "service: $(systemctl --user is-active "$SVC" 2>/dev/null || true)"
+    say "enabled: $(systemctl --user is-enabled "$SVC" 2>/dev/null || true)"
+    say "update timer:"
+    systemctl --user list-timers "$UPD_TIMER" --no-pager 2>/dev/null || say "  (not installed)"
+    if [ -f "$KEY" ]; then say "key: present"; else say "key: absent"; fi
+}
+
+case $CMD in
+    install) cmd_install ;;
+    update) cmd_update ;;
+    uninstall) cmd_uninstall ;;
+    set-key) cmd_set_key ;;
+    status) cmd_status ;;
+    *) die "unknown command: $CMD" ;;
+esac

@@ -1,14 +1,14 @@
 # In Progress — Lumen (lumen-tv)
 
-Last updated: 2026-10-26
+Last updated: 2026-10-28
 
 ## Where we are
-Lumen's UI is Slint (femtovg), 60 fps at 1080p60 and 4K60 on the TV. Done through **M5.3 (2026-10-26)**: registry + launching (Jellyfin, YouTube, AirPlay, Steam Link), Settings/diagnostics, the LG remote (red = Home), the Store (flatpak `--user`; apt apps through the PIN-protected root helper), DualSense + Bluetooth panel, and the boot session. **Lumen is pitv's boot default** (`lumen.service` enabled, quiet boot; stop booting it = plain tty1 console login: `sudo sh ~/lumen-tv/session/install.sh --apply --revert && sudo reboot`). A Power tile restarts Lumen, reboots or shuts down. M5.1 added default YouTube (youtube.com/tv in kiosk Chromium, keep-alive) and AirPlay (UxPlay inside labwc) tiles. **Kodi is a Store app now and is uninstalled from pitv**. The crash rescue is a tty1 login prompt (3 exits in 60 s, no autologin, SSH works). Kodi-era units, scripts and sudoers files were removed from pitv (K5, 2026-10-26). Laith has no retro games until RetroArch ships in M5.5. **Next: M5.5 (Gate confirmed 2026-10-26), planned through the orchestrator; not started.** M5.2 (Steam Link in the background) is on hold (Laith, 2026-10-25).
+Lumen's UI is Slint (femtovg), 60 fps at 1080p60 and 4K60 on the TV. Done through **M5.5 (2026-10-28)**: registry + launching (Jellyfin, YouTube, AirPlay, Steam Link), Settings/diagnostics, the LG remote (red = Home), the Store (flatpak `--user`; apt apps through the PIN-protected root helper), DualSense + Bluetooth panel, and the boot session. **Lumen is pitv's boot default** (`lumen.service` enabled, quiet boot; stop booting it = plain tty1 console login: `sudo sh ~/lumen-tv/session/install.sh --apply --revert && sudo reboot`). A Power tile restarts Lumen, reboots or shuts down. Default tiles: Jellyfin, YouTube (youtube.com/tv in kiosk Chromium), AirPlay (UxPlay in labwc), Steam Link. **Kodi is a Store app and uninstalled from pitv**; the crash rescue is a tty1 login prompt (3 exits in 60 s, no autologin, SSH works). **M5.5 closed 2026-10-28:** the Store has 13 apps in sections; 8 new ones work at the TV (Spotify web, Spotify Connect via Soloist, RetroArch, Moonlight, chiaki-ng, VLC, Audiobookshelf, Twitch; Moonlight/chiaki-ng streaming untested, no host); bench 60 fps. All M5.5 work is uncommitted and `store/manifest.json` is not pushed (live Store unchanged). pitv has a working fan (no throttling) and runs Soloist as the user unit `soloist.service` (see `../CLAUDE.md` Design → Spotify Connect). Next: M6; M5.2 (Steam Link in the background) is on hold (Laith, 2026-10-25).
 
 ## Active Plan
-Order: M5.5 → M6 (M5.2 on hold) (see MILESTONES.md), stopping after each one for a TV test. M5.3 closed 2026-10-26 (build phases in docs/ARCHIVE.md); K5 removals done on pitv 2026-10-26.
+Order: M6 next (M5.2 on hold) (see MILESTONES.md), stopping after each milestone for a TV test. M5.5 closed 2026-10-28, M5.3 closed 2026-10-26 (build phases in docs/ARCHIVE.md).
 
-**M5.5 (next, not started):** Gate confirmed by Laith 2026-10-26, incl. the Store cleanup (kolourpaint, store-test, root-test out of the public manifest; `[root-test]` out of the allowlist). Start only when Laith asks: `orchestrator` writes a fresh AGENT_JOBS.md (replacing the finished M5.3 plan), then the main conversation spawns the jobs. First: Phase 6 spike (Spotify route + catalogue availability on aarch64, read-only on pitv; RetroArch is a priority).
+No active build. Before M6: commit the M5.5 work and push `store/manifest.json` (Laith's call; see Next Steps 1).
 
 **M5.2:** on hold (Laith, 2026-10-25). Spike stopped; its Pi changes undone.
 
@@ -60,6 +60,8 @@ Decisions so far:
 - (2026-10-06) Store manifest lives in this repo: github.com/Novapool/lumen-tv, `store/manifest.json` (raw URL once pushed).
 - (2026-10-06) Pi 5 has 8 GB RAM. laith is already in the `input` group. TV native mode is 3840x2160; Lumen sets 1080p60 by default with `wlr-randr` (`LUMEN_MODE` overrides it).
 
+- (2026-10-26) The RetroArch Flatpak under Wayland falls back to llvmpipe (Mesa 26.2.5, EGL "failed to get driver name for fd -1", ~160% CPU); via Xwayland (`--nosocket=wayland --socket=x11`) it gets V3D 7.1.7 (~15% CPU). Launch it that way.
+
 - (2026-10-09) Clients run as children of Lumen in labwc (env XDG_RUNTIME_DIR=/run/user/1000, WAYLAND_DISPLAY=wayland-0, DISPLAY=:0 via Xwayland). All raise/close/fullscreen via foreign-toplevel:
   - Jellyfin: web client in Chromium (`http://192.168.5.174:8096`, app_id `lumen-jellyfin`), TV layout set once via `localStorage.layout = "tv"` in its profile (`~/.local/share/lumen-tv/browser/jellyfin`). Jellyfin Desktop (Flathub) was dropped as the launcher (still installed, for its icon): no GPU in its Mesa (software rendering, very slow) and its player showed subtitles with no video/audio.
   - Web apps get their own Chromium profile and app_id `lumen-<id>` (`{id}` in the browser command); otherwise a second launch hands off to the running Chromium and exits.
@@ -105,9 +107,7 @@ Decisions so far:
 - `if`-created drop-shadow elements re-blur every time they are created; use one fixed shadow Image and fade it.
 
 ## Current Work
-M5.3 closed 2026-10-26 (all 12 Gate checks pass; result line in MILESTONES.md, per-check evidence in docs/ARCHIVE.md). Nothing is being built. K5 removals done on pitv; manifest pushed.
-
-**pitv state to remember (2026-10-26):** M5.3 pushed (22bb762); the public manifest has the kodi/root-test entries and pitv's Store reads it again (the Gate's temporary `store_url` line is removed). The root helper is installed (`lumen-helper.socket` enabled, PIN set). Kodi and all its packages are gone; Kodi-era units, sudoers and scripts removed (K5).
+None. M5.5 closed 2026-10-28 (result line in MILESTONES.md, TV evidence + spike report in docs/ARCHIVE.md "M5.5 TV Gate"). RetroArch cores live under `~/.var/app/org.libretro.RetroArch/`; RetroArch uninstall leaves ~1 GB KDE runtimes (`flatpak uninstall --user --unused` by hand). Flatpak user data stays in `~/.var/app/<id>` after Store uninstall (Moonlight, Chiaki4deck, VLC).
 
 **`[kodi]` allowlist set (K6):** install = kodi, kodi-game-libretro, kodi-inputstream-adaptive, libretro-mgba, libretro-gambatte, libretro-desmume, kodi-repository-kodi; remove = those seven + kodi-visualization-spectrum (apt simulation: 8 removed, 0 installed; the helper refuses anything apt would remove or install beyond the list). Helper: `helper/` crate (`lumen-helper serve|set-pin|check`), argon2id PIN under `/var/lib/lumen-helper/`, 5 wrong → 60 s lock doubling to 1 h. Lumen side: `src/platform/installer.rs`, `store::run_root`, `ui/pinpad.slint`. Review findings: docs/ARCHIVE.md → "M5.3 Phase 2 security review".
 
@@ -125,7 +125,7 @@ Contracts from M5 (as built): mode precedence settings.toml `mode` > `LUMEN_MODE
 - Perf lines log under `labwc[...]`, so grep the whole journal, not `-u lumen-test`.
 - Don't run wf-recorder on the Pi: its frames come out garbled and it froze the TV output.
 - History: the WebKit focus-change flash/snap (compositor drew pre-animation values for ~2 frames) was patched with "hold" animations (95dc6f9); gone since the Slint port.
-- Benchmark: put `LUMEN_BENCH=1` in `~/.config/lumen-tv/env` (runs on every start; remove it after), or press B on the home screen.
+- Benchmark: put `LUMEN_BENCH=1` in `~/.config/lumen-tv/env` (runs on every start; remove it after), or press the keyboard letter b on the home screen (not the DualSense B/Circle, not a remote key). With the remote: Settings → the panel with resolution/input-debug → third row.
 
 - Home (`KEY_F1`/`KEY_LEFTMETA`) is read from evdev, so the focused app also receives it unless rc.xml swallows it (F1 and Super_L are; `KEY_HOMEPAGE` is not).
 - Steam Link needs Xwayland, and labwc must be restarted after installing it (restart Lumen).
@@ -135,16 +135,21 @@ Contracts from M5 (as built): mode precedence settings.toml `mode` > `LUMEN_MODE
 
 ## Blockers
 - (none)
-- Bench is thermally sensitive: the Pi has no fan; after long builds it throttles at 75-82 C and 4K drops to 45-55 fps (a cool 4K run passed at 60). Let it cool before benching.
+- Bench is thermally sensitive (before the fan, long builds throttled it at 75-82 C and 4K dropped to 45-55 fps). The fan works since 2026-10-27; still check `vcgencmd measure_temp` is well below 80 C before benching.
 
 ## Next Steps
-1. **M5.2 on hold** (Laith, 2026-10-25). When it resumes: spike finding so far is that Steam Link ships SDL3 + HIDAPI and may read the pad via `/dev/hidraw*`; also revisit `exclusive`.
-2. **K5 done 2026-10-26:** Pi-side removals (units, sudoers, scripts, kodi.toml.bak, kodi-bin/-data) by Laith; Lumen units no longer name the Kodi units in `Conflicts=` and are reinstalled on pitv; the Kodi-era files in `../config/` deleted (Laith's OK). Kept: `kodi-games/`, `favourites.xml`, `sources.xml`, skin file.
-3. **M5.5 next (Gate confirmed by Laith 2026-10-26, incl. Store cleanup of kolourpaint/store-test/root-test).** Don't start until Laith asks. When he does (likely after a handover), plan it with the `orchestrator` agent (fresh AGENT_JOBS.md for M5.5, replacing the M5.3 one), then spawn its jobs; first job is the Phase 6 spike (read-only on pitv; RetroArch is a priority: it replaces Kodi's RetroPlayer).
-4. Untested: uninstalling a keep-alive app while it runs (M4's 8 s wait).
-5. Small: 5 known clippy warnings (`bluetooth.rs:432`, `icons.rs:42/70`, `input/mapping.rs:296`, `store.rs:463`). pitv has no clippy component (`rustup component add clippy`, Laith's call).
+1. **Pending (Laith): `store/manifest.json` is not pushed.** After the push, remove the temporary `store_url` line from pitv: `sed -i '/^store_url/d' ~/.config/lumen-tv/settings.toml`, then Power → Restart Lumen. Until then pitv reads the manifest from `/home/laith/lumen-tv/store/manifest.json`.
+2. **M6 next** (MILESTONES.md). **M5.2 on hold** (Laith, 2026-10-25). When it resumes: Steam Link ships SDL3 + HIDAPI and may read the pad via `/dev/hidraw*`; also revisit `exclusive`.
+3. **M6+ item:** keyboard-free key entry for Soloist (today `lumen-soloist set-key` over SSH; a phone page is the idea).
+4. **Untested:** Moonlight and chiaki-ng streaming (no host/console to test with); uninstalling a keep-alive app while it runs (M4's 8 s wait).
+5. **Follow-up (Laith, 2026-10-27, low priority):** the TV remote's Back does nothing in RetroArch (CEC Back arrives as KEY_BACK/XF86Back, RetroArch's menu wants Backspace/Z; `keys_out` only translates for gamepads in web apps). Fix idea: let a `keys` override (e.g. retroarch `Back = "KEY_BACKSPACE"`) apply to the remote for any app. Controllers work, so not blocking.
+6. **Idea (Laith, 2026-10-27): close a running app from Lumen.** Apps like karaoke stay open in the background. On Home, pressing Options (DualSense; Menu action, unused on Home today) on a tile whose app is running opens a small menu with "Quit". The remote needs a key for it too (open). Shape into a milestone.
+7. **Follow-up (Laith, 2026-10-28): AirPlay PIN.** Today UxPlay (`session/lumen-airplay`: `-n pitv -nh`) has no PIN; only the home Wi-Fi can reach it (eth0 drops inbound, mDNS is LAN-only) and only while the tile is open. Plan: add `-pin <code> -reg` (iOS asks the code once per device, remembered in `~/.uxplay.register`); a random PIN is useless here (UxPlay prints it to the log, not the screen). Keep the code out of the repo (read it from a 0600 file on the Pi, like the Soloist key).
+8. **Idea: YouTube Music, Pluto TV, Tubi back in the Store.** Dropped from M5.5 (2026-10-28). YouTube Music: with Chromium's own UA music.youtube.com loads and plays, but its desktop page can't be driven with the remote alone (with the GoogleTV UA it says "not optimized for your browser"). With the GoogleTV UA, Pluto TV showed a black screen and Tubi said "use a supported browser"; neither was retried with Chromium's UA. A remote extension like `config/browser/spotify-tv/` (arrows, OK, focus ring) plus Chromium's UA would likely fix all three.
+9. **Idea (Laith, 2026-10-28): reorder Home tiles and update icons.** A way to change the order of apps on Home (today: each TOML's `order` field, edited by hand) and to replace a tile's icon (today: icon lookup in `icons.rs`, or a hand-placed file like `karaoke.svg`), ideally from the TV. Shape into a milestone.
+10. Small: 5 known clippy warnings (`bluetooth.rs:432`, `icons.rs:42/70`, `input/mapping.rs:296`, `store.rs:463`). pitv has no clippy component (`rustup component add clippy`, Laith's call).
 
 ## Recently Completed
+- M5.5 More Store apps (2026-10-28): Gate passes at the TV (Laith). 8 new entries (Spotify web, Spotify Connect, RetroArch, Moonlight, chiaki-ng, VLC, Audiobookshelf, Twitch); YouTube Music, Pluto, Tubi dropped; bench 60.0 fps / 0.1% slow. Result line in MILESTONES.md, evidence + spike report in docs/ARCHIVE.md.
 - M5.3 Root install helper (PIN) + Kodi as a Store app (2026-10-26): all 12 Gate checks pass at the TV (Laith). Kodi uninstalled from pitv; crash rescue = tty1 login. Result line in MILESTONES.md, checklist + build phases in docs/ARCHIVE.md.
 - M5.1 YouTube + AirPlay tiles (2026-10-25): both Gates pass at the TV (Laith). Result line in MILESTONES.md, checklist + build-round notes in docs/ARCHIVE.md.
-- M5 Boot session + polish (2026-10-24): all TV checks pass (Laith). Lumen is the boot default; Power tile; saved resolution survives TV power-cycles; stick rebound fixed; installer + quiet boot. Result line in MILESTONES.md, checklist in docs/ARCHIVE.md.

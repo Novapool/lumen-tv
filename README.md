@@ -104,6 +104,7 @@ One TOML file per app in `~/.config/lumen-tv/apps/`. The built-in apps (Jellyfin
 | `url` | Required for `url`. Opened in the kiosk browser. |
 | `fallback_url` | Used when `launch`'s program isn't on PATH. |
 | `background` | `"close-on-exit"` (default) or `"keep-alive"` (stays running when you go Home). |
+| `pause_on_home` | `true` (default) or `false`. `keep-alive` apps only (an error otherwise). `false` sends no MPRIS Pause when you go Home, so media keeps playing (Spotify, Audiobookshelf). Also accepted in Store manifest entries. |
 | `exclusive` | `true` stops other apps while it runs. Default false. |
 | `icon` | Icon name or path (resolved by `src/icons.rs`). |
 | `app_id` | Wayland app_id / X11 class of the app's windows. |
@@ -169,6 +170,42 @@ Precedence: `settings.toml` first, then `LUMEN_STORE_URL`, then the built-in URL
 
 It prints each app with its install/uninstall commands and any errors; exit 0 means no errors. Lumen shows install commands before running them.
 
+Each manifest app takes the registry fields above plus these Store-only keys:
+
+| Key | Meaning |
+|---|---|
+| `description`, `detail`, `install`, `uninstall`, `root` | As in `store/manifest.json`. |
+| `category` | Optional. One of `Media`, `Music`, `Games`, `Utilities`; default `Media`. Sets the section the app is listed under on the Store screen (sections appear in that order). An unknown value skips the app with an error. |
+| `notes` | Optional setup text, shown as "Setup: ..." on the details screen. |
+| `arch` | Optional list of `uname -m` values, e.g. `["aarch64"]`. The app is hidden on other machines; missing = all. |
+| `tile` | Optional, default `true`. `false` = an entry with no Home tile (a background service such as Spotify Connect): Lumen writes no app TOML, shows no tile, and `--store-loop` skips it; installed state is the receipt only. Launch-related keys (`launch`, `url`, `app_id`, `process`, `background`, `exclusive`, `pause_on_home`, `icon`, `user_agent`, `browser_args`, `keys`, `fallback_url`) are rejected with it. |
+
+Test fixtures: `store/fixtures/test-manifest.json` holds `kolourpaint` (a small user Flatpak), `store-test` (its install fails on purpose), `root-test` (installs and removes the apt package `sl` through the PIN helper) and `notile-test` (`tile: false`, no-op steps; checks the receipt-only path). Use it with `--store-check store/fixtures/test-manifest.json`, or point the Store at it with `LUMEN_STORE_URL=/home/laith/lumen-tv/store/fixtures/test-manifest.json`. `root-test` only works with a local copy of the helper allowlist that has a `[root-test]` set.
+
+### Store loop (automated install check)
+
+```sh
+./target/release/lumen-tv --store-loop [--source <manifest>] [--dry-run] [ids...]
+```
+
+For each non-root entry (all of them, or just the ids given): install, launch, check that a fullscreen window with the entry's `app_id` appears, close it, uninstall. Root entries, entries for another architecture and entries with a step that needs root are skipped. Entries already installed (registry entry, receipt, or `flatpak info --user` succeeds) are skipped with the reason, never touched; uninstall one first or it stays skipped. It prints one `PASS`/`FAIL`/`SKIP` line per entry; exit 1 on any FAIL, 2 on bad arguments (including unknown ids). It needs the labwc session: `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` and `DISPLAY` default to `/run/user/1000`, `wayland-0` and `:0`. A real run installs and removes real software, so run with `--dry-run` first (prints every command, executes nothing).
+
+## Spotify Connect (Soloist)
+
+The Store's "Spotify Connect" entry (`tile: false`, no Home tile) turns the box into a Spotify Connect speaker named after its hostname, using Spotify's own headless client Soloist. It needs a Spotify Premium account and your own Soloist API key; Soloist is Spotify's binary under Spotify's terms, downloaded on the box and never shipped with Lumen. `session/lumen-soloist` does the work (no root, user systemd units only; tests in `session/test_lumen_soloist.py`):
+
+```sh
+sh ~/lumen-tv/session/lumen-soloist [--dry-run] install | update [--force] | uninstall [--purge] | set-key | status
+```
+
+- `install` (what the Store runs): downloads Soloist (https only, checked as an aarch64 ELF, swapped in atomically), writes `soloist.service`, `soloist-update.service` and `soloist-update.timer` to `~/.config/systemd/user/`, enables the timer and the service. Without a key the service waits (it is skipped by a `ConditionPathExists`, no restart loop).
+- `set-key` (run over SSH): reads the key from stdin without echoing it, stores it in `~/.config/soloist/key` (0600), and starts the service. The key is never printed or logged. Soloist only takes it as `-k` on its command line, so check health with `status` or `systemctl --user is-active soloist`, never `ps` or `systemctl status`.
+- `status`: binary, service, timer and key presence in a few lines; never shows the key.
+- `update`: the weekly timer (randomised by up to 6 h, catches up after downtime) runs it; builds expire 90 days after release (exit 10). It restarts the service only when the binary changed; `--force` re-downloads and restarts. Failed downloads keep the old install.
+- `uninstall` (what the Store's remove runs): removes the units and `~/.local/lib/soloist`, but keeps the key and login state; `--purge` also deletes `~/.config/soloist`, `~/.local/share/soloist` and `~/.cache/soloist`.
+- Files: binary `~/.local/lib/soloist/`, key `~/.config/soloist/key`, login state `~/.local/share/soloist`, cache `~/.cache/soloist` (capped at 300 MB, `-z 300`). The WebSocket API listens on `127.0.0.1:9090`. Starting at boot needs user linger (`loginctl enable-linger`, already on for pitv).
+- `--dry-run` prints every action and changes nothing.
+
 ## Resolution
 
 Default output mode is 1080p60; 4K60 also holds 60 fps. Change it in Settings > Toggles > Resolution (applied right away and saved), or set `mode` in `~/.config/lumen-tv/settings.toml`:
@@ -187,7 +224,7 @@ Format is `WIDTHxHEIGHT@RATE`. Precedence: `settings.toml` `mode`, then `LUMEN_M
 |---|---|
 | `LUMEN_MODE` | Output mode, used only if `settings.toml` has no `mode`. |
 | `LUMEN_STORE_URL` | Store manifest, used only if `settings.toml` has no `store_url`. |
-| `LUMEN_BENCH` | `1` starts the frame-time bench 3 s after launch; `bt` benches the Bluetooth panel. |
+| `LUMEN_BENCH` | `1` starts the frame-time bench 3 s after launch; `bt` benches the Bluetooth panel. On Home the keyboard letter b also starts it (not a pad or remote key); with the remote use the third row of the Settings panel with resolution/input-debug. |
 | `LUMEN_BIN` | Run another binary instead of `~/lumen-tv/target/release/lumen-tv` (read by `start-lumen.sh`). |
 | `LUMEN_BROWSER` | Kiosk browser command template for `url` apps. |
 | `LUMEN_BT` | `fake` uses a fake Bluetooth backend (for UI testing). |

@@ -9,10 +9,6 @@
 #   sudo sh session/install.sh --apply --helper
 # (it shows a diff before replacing the installed copy).
 
-[root-test]
-install = ["sl"]
-remove = ["sl"]
-
 [steamlink]
 install = ["steamlink"]
 remove = ["steamlink"]
@@ -30,3 +26,9 @@ remove = []
 [kodi]
 install = ["kodi", "kodi-game-libretro", "kodi-inputstream-adaptive", "libretro-mgba", "libretro-gambatte", "libretro-desmume", "kodi-repository-kodi"]
 remove = ["kodi", "kodi-game-libretro", "kodi-inputstream-adaptive", "libretro-mgba", "libretro-gambatte", "libretro-desmume", "kodi-repository-kodi", "kodi-visualization-spectrum"]
+
+# Widevine for the Spotify web player (Chromium kiosk). Only this one package;
+# the helper's simulation check refuses any removal not listed here.
+[spotify]
+install = ["libwidevinecdm0"]
+remove = ["libwidevinecdm0"]

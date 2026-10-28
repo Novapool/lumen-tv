@@ -30,6 +30,7 @@ mod settings;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod store;
 mod storefeed;
+mod storeloop;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -280,6 +281,16 @@ fn store_check(source: Option<String>) -> ! {
     let m = store::parse_manifest(&text);
     for a in &m.apps {
         println!("{} ({}){}", a.id(), a.entry.name, if a.root { " [root]" } else { "" });
+        println!("  category:  {}", a.category);
+        if !a.tile {
+            println!("  tile: no");
+        }
+        if !a.arch.is_empty() {
+            println!("  arch:      {}", a.arch.join(", "));
+        }
+        if !a.notes.is_empty() {
+            println!("  notes:     {}", a.notes);
+        }
         for s in &a.install {
             println!("  install:   {s}");
         }
@@ -327,6 +338,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("--store-check") => store_check(args.next()),
+        Some("--store-loop") => storeloop::run(&args.collect::<Vec<_>>()),
         Some("--bt-check") => bt_check(),
         _ => {}
     }

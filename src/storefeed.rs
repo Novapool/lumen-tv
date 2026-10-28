@@ -117,13 +117,18 @@ fn launch_of(e: &registry::Entry) -> String {
 /// Rebuilds `store-items` from the cached manifest, the registry and the receipts.
 fn refresh_items(ui: &AppWindow) {
     let registry = registry::load(&registry::apps_dir());
-    let receipts = store::read_receipts(&store::receipts_dir());
+    let receipts_dir = store::receipts_dir();
+    let receipts = store::read_receipts(&receipts_dir);
+    let registry_ids: std::collections::HashSet<String> = registry.entries.iter().map(|e| e.id.clone()).collect();
     let items: Vec<StoreItem> = FEED.with(|f| {
         let f = f.borrow();
+        // `apps` arrives grouped by category (store::store_view).
+        let layout = store::section_layout(&f.apps);
         f.apps
             .iter()
-            .map(|a| {
-                let installed = registry.entries.iter().any(|e| e.id == a.id());
+            .zip(layout)
+            .map(|(a, (section, section_start))| {
+                let installed = store::is_installed(a, &registry_ids, &receipts_dir);
                 let mode = root_mode(a.root, a.id(), &f.status);
                 // Package names come only from the helper's status, never the manifest.
                 let root_command = match (mode, f.status.sets.get(a.id())) {
@@ -168,6 +173,10 @@ fn refresh_items(ui: &AppWindow) {
                     launch: launch_of(&a.entry).into(),
                     install: strings(&a.install),
                     uninstall: strings(&store::uninstall_steps(a, receipts.get(a.id()))),
+                    category: a.category.as_str().into(),
+                    notes: a.notes.as_str().into(),
+                    section: section as i32,
+                    section_start,
                 }
             })
             .collect()
@@ -216,7 +225,7 @@ fn load(ui: &AppWindow) {
                     };
                     FEED.with(|f| {
                         let mut f = f.borrow_mut();
-                        f.apps = m.apps;
+                        f.apps = store::store_view(&m.apps, &store::running_arch());
                         set_status(&mut f, status);
                     });
                     refresh_items(&ui);
@@ -275,15 +284,18 @@ fn on_job_event(ui: &AppWindow, ev: JobEvent) {
         }
         JobEvent::Done => {
             ui.set_pin_busy(false);
-            let uninstall = ui.get_store_job().action == "uninstall";
+            let job = ui.get_store_job();
+            let uninstall = job.action == "uninstall";
+            let tile = FEED.with(|f| f.borrow().apps.iter().find(|a| a.id() == job.id.as_str()).is_none_or(|a| a.tile));
             reload_after_job(ui);
             if root {
                 refresh_status(ui);
             }
-            let msg = if uninstall {
-                "removed from Home"
-            } else {
-                "added to Home"
+            let msg = match (tile, uninstall) {
+                (true, true) => "removed from Home",
+                (true, false) => "added to Home",
+                (false, true) => "uninstalled",
+                (false, false) => "installed",
             };
             set_job(ui, |j| {
                 j.state = 2;

@@ -1,0 +1,10 @@
+/* Lumen Spotify remote: Spotify hides its focus outline, so with the remote's
+   arrows (Chromium --enable-spatial-navigation) nothing showed where focus was.
+   A ring big enough to read from the sofa. */
+:focus,
+:focus-visible {
+  outline: 4px solid #1ed760 !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 8px rgba(30, 215, 96, 0.35) !important;
+  border-radius: 6px;
+}

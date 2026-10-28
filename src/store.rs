@@ -24,7 +24,18 @@ use crate::registry::{self, Entry};
 pub(crate) const DEFAULT_URL: &str = "https://raw.githubusercontent.com/Novapool/lumen-tv/main/store/manifest.json";
 
 /// Keys of a manifest app that aren't registry fields.
-const STORE_KEYS: [&str; 5] = ["description", "detail", "install", "uninstall", "root"];
+const STORE_KEYS: [&str; 9] = ["description", "detail", "install", "uninstall", "root", "category", "notes", "arch", "tile"];
+
+/// Registry/launch keys a `tile: false` app must not carry (it has no registry entry).
+const TILE_ONLY_KEYS: [&str; 13] = [
+    "type", "launch", "url", "fallback_url", "app_id", "process", "background", "exclusive", "pause_on_home", "icon", "user_agent",
+    "browser_args", "keys",
+];
+
+/// The Store's sections, in display order. A manifest `category` must be one of these.
+pub const CATEGORIES: [&str; 4] = ["Media", "Music", "Games", "Utilities"];
+/// The section of an app that names no `category`.
+pub const DEFAULT_CATEGORY: &str = "Media";
 
 /// One app in the manifest: the registry entry it would install, plus store-only data.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,9 +46,24 @@ pub struct StoreApp {
     pub install: Vec<String>,
     pub uninstall: Vec<String>,
     pub root: bool,
+    /// One of `CATEGORIES` (the Store section).
+    pub category: String,
+    /// Setup notes shown on the details screen (empty = none).
+    pub notes: String,
+    /// `uname -m` values this app runs on; empty = every architecture.
+    pub arch: Vec<String>,
+    /// False = a background service with no Home tile: no registry entry is
+    /// written, and "installed" means the receipt exists. `entry` then holds
+    /// only the id, name and Store-row look.
+    pub tile: bool,
 }
 
 impl StoreApp {
+    /// True when the app is offered on `running` (a `uname -m` value).
+    pub fn runs_on(&self, running: &str) -> bool {
+        self.arch.is_empty() || self.arch.iter().any(|a| a == running)
+    }
+
     pub fn id(&self) -> &str {
         &self.entry.id
     }
@@ -46,6 +72,12 @@ impl StoreApp {
     pub fn to_value(&self) -> Value {
         let mut v = serde_json::to_value(&self.entry).expect("Entry serializes");
         let o = v.as_object_mut().expect("Entry is an object");
+        if !self.tile {
+            o.insert("tile".into(), json!(false));
+            for k in TILE_ONLY_KEYS {
+                o.remove(k);
+            }
+        }
         o.insert("description".into(), json!(self.description));
         if let Some(d) = &self.detail {
             o.insert("detail".into(), json!(d));
@@ -55,8 +87,58 @@ impl StoreApp {
         if self.root {
             o.insert("root".into(), json!(true));
         }
+        o.insert("category".into(), json!(self.category));
+        if !self.notes.is_empty() {
+            o.insert("notes".into(), json!(self.notes));
+        }
+        if !self.arch.is_empty() {
+            o.insert("arch".into(), json!(self.arch));
+        }
         v
     }
+}
+
+/// The running machine's `uname -m` (falls back to the compile-time arch).
+pub fn running_arch() -> String {
+    Command::new("uname")
+        .arg("-m")
+        .stdin(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| std::env::consts::ARCH.to_string())
+}
+
+/// Position of a category in the Store's section order.
+pub fn category_rank(category: &str) -> usize {
+    CATEGORIES.iter().position(|c| *c == category).unwrap_or(CATEGORIES.len())
+}
+
+/// The apps offered on `running`, grouped by category in `CATEGORIES` order
+/// (manifest order kept inside a category).
+pub fn store_view(apps: &[StoreApp], running: &str) -> Vec<StoreApp> {
+    let mut v: Vec<StoreApp> = apps.iter().filter(|a| a.runs_on(running)).cloned().collect();
+    v.sort_by_key(|a| category_rank(&a.category));
+    v
+}
+
+/// Per item of a category-grouped list: (0-based section index, first item of its section).
+pub fn section_layout(apps: &[StoreApp]) -> Vec<(usize, bool)> {
+    let mut section = 0;
+    let mut prev: Option<&str> = None;
+    apps.iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let start = prev != Some(a.category.as_str());
+            if start && i > 0 {
+                section += 1;
+            }
+            prev = Some(a.category.as_str());
+            (section, start)
+        })
+        .collect()
 }
 
 #[derive(Debug, Default)]
@@ -104,10 +186,45 @@ pub fn parse_app(v: Value) -> Result<StoreApp, String> {
         Some(Value::Bool(b)) => b,
         Some(_) => return Err("\"root\" should be true or false".into()),
     };
+    let category = match o.remove("category") {
+        None => DEFAULT_CATEGORY.to_string(),
+        Some(Value::String(s)) if CATEGORIES.contains(&s.as_str()) => s,
+        Some(_) => return Err(format!("\"category\" should be one of {}", CATEGORIES.join(", "))),
+    };
+    let notes = match o.remove("notes") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s,
+        Some(_) => return Err("\"notes\" should be a string".into()),
+    };
+    let arch = match o.remove("arch") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .map(|a| match a {
+                Value::String(s) if !s.trim().is_empty() => Ok(s),
+                _ => Err("\"arch\" should be a list of non-empty strings (uname -m values)".to_string()),
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => return Err("\"arch\" should be a list of strings (uname -m values)".into()),
+    };
+    let tile = match o.remove("tile") {
+        None => true,
+        Some(Value::Bool(b)) => b,
+        Some(_) => return Err("\"tile\" should be true or false".into()),
+    };
     debug_assert!(STORE_KEYS.iter().all(|k| !o.contains_key(*k)));
+    if !tile {
+        if let Some(k) = TILE_ONLY_KEYS.iter().find(|k| o.contains_key(**k)) {
+            return Err(format!("\"{k}\" can't be used with \"tile\": false (the app has no Home tile)"));
+        }
+    }
     let entry: Entry = serde_json::from_value(Value::Object(o)).map_err(|e| e.to_string())?;
-    entry.validate()?;
-    Ok(StoreApp { entry, description, detail, install, uninstall, root })
+    if tile {
+        entry.validate()?;
+    } else {
+        entry.validate_identity()?;
+    }
+    Ok(StoreApp { entry, description, detail, install, uninstall, root, category, notes, arch, tile })
 }
 
 /// Parses a manifest document. A bad app is skipped and recorded in `errors`.
@@ -366,6 +483,16 @@ pub fn root_refusal(app: &StoreApp, status: &RootStatus) -> Option<String> {
     None
 }
 
+/// True when the app is on this machine: its registry entry exists, or, for a
+/// `tile: false` app (no entry), its receipt does.
+pub fn is_installed(app: &StoreApp, registry_ids: &HashSet<String>, receipts_dir: &Path) -> bool {
+    if app.tile {
+        registry_ids.contains(app.id())
+    } else {
+        receipts_dir.join(format!("{}.json", app.id())).exists()
+    }
+}
+
 /// Why a job may not start, if it may not. `status` is the helper's status
 /// (`RootStatus::default()` = no helper); it is only looked at for root apps.
 pub fn check(action: Action, app: &StoreApp, dirs: &Dirs, status: &RootStatus) -> Result<(), String> {
@@ -374,7 +501,8 @@ pub fn check(action: Action, app: &StoreApp, dirs: &Dirs, status: &RootStatus) -
             return Err(why);
         }
     }
-    let installed = registry::load(&dirs.registry).entries.iter().any(|e| e.id == app.id());
+    let ids: HashSet<String> = registry::load(&dirs.registry).entries.into_iter().map(|e| e.id).collect();
+    let installed = is_installed(app, &ids, &dirs.receipts);
     match (action, installed) {
         (Action::Install, true) => Err("already installed".into()),
         (Action::Uninstall, false) => Err("not installed".into()),
@@ -614,6 +742,16 @@ fn run_root(
 /// entry and the receipt. Install leaves neither behind if the second write fails.
 fn commit(dirs: &Dirs, source: &str, action: Action, app: &StoreApp) -> std::io::Result<()> {
     let id = app.id();
+    if !app.tile {
+        return match action {
+            Action::Install => write_receipt(&dirs.receipts, app, source).map(|_| ()),
+            Action::Uninstall => match remove_receipt(&dirs.receipts, id) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("no {id}.json to remove"))),
+                Err(e) => Err(e),
+            },
+        };
+    }
     match action {
         Action::Install => {
             let header = format!(
@@ -805,9 +943,15 @@ mod tests {
         let m = parse_manifest(MANIFEST);
         assert!(m.errors.is_empty(), "{:?}", m.errors);
         let ids: Vec<_> = m.apps.iter().map(|a| a.id()).collect();
-        assert_eq!(ids, ["jellyfin", "youtube", "airplay", "steamlink", "kodi", "kolourpaint", "store-test", "root-test"]);
+        // Test entries live in store/fixtures, never in the public manifest.
+        for t in ["kolourpaint", "store-test", "root-test"] {
+            assert!(!ids.contains(&t), "{t} must not ship in the public manifest");
+        }
+        for d in ["jellyfin", "youtube", "airplay", "steamlink", "kodi"] {
+            assert!(ids.contains(&d), "{d} missing");
+        }
         let by = |id: &str| m.apps.iter().find(|a| a.id() == id).unwrap();
-        assert!(by("steamlink").root && by("kodi").root && by("root-test").root && !by("kolourpaint").root);
+        assert!(by("steamlink").root && by("kodi").root);
         assert!(by("jellyfin").install.is_empty());
         // The manifest's shipped ids' registry fields match the shipped TOMLs.
         for (name, text) in registry::SHIPPED {
@@ -816,6 +960,61 @@ mod tests {
                 assert_eq!(a.entry, e, "{} differs from config/apps", e.id);
             }
         }
+    }
+
+    #[test]
+    fn category_defaults_validates_and_orders() {
+        let a = parse_manifest(&app_json("")).apps.remove(0);
+        assert_eq!(a.category, DEFAULT_CATEGORY);
+        assert!(CATEGORIES.contains(&DEFAULT_CATEGORY));
+        for c in CATEGORIES {
+            let m = parse_manifest(&app_json(&format!(r#","category":"{c}""#)));
+            assert!(m.errors.is_empty(), "{c}: {:?}", m.errors);
+        }
+        for bad in [r#","category":"Nope""#, r#","category":"media""#, r#","category":3"#] {
+            let m = parse_manifest(&app_json(bad));
+            assert!(m.apps.is_empty() && m.errors[0].contains("category"), "{bad}: {:?}", m.errors);
+        }
+        let mk = |id: &str, c: &str| parse_app(json!({"id": id, "name": id, "launch": id, "install": [], "uninstall": [], "category": c})).unwrap();
+        let apps = [mk("g1", "Games"), mk("u1", "Utilities"), mk("m1", "Media"), mk("g2", "Games"), mk("s1", "Music")];
+        let ids: Vec<_> = store_view(&apps, "aarch64").iter().map(|a| a.id().to_string()).collect();
+        assert_eq!(ids, ["m1", "s1", "g1", "g2", "u1"]);
+    }
+
+    #[test]
+    fn arch_hides_entries_not_listed_for_the_running_machine() {
+        let mk = |id: &str, arch: &str| parse_app(json!({"id": id, "name": id, "launch": id, "install": [], "uninstall": [], "arch": arch.split_whitespace().collect::<Vec<_>>()})).unwrap();
+        let apps = [mk("any", ""), mk("arm", "aarch64"), mk("x86", "x86_64"), mk("both", "aarch64 x86_64")];
+        let ids = |m: &str| store_view(&apps, m).iter().map(|a| a.id().to_string()).collect::<Vec<_>>();
+        assert_eq!(ids("aarch64"), ["any", "arm", "both"]);
+        assert_eq!(ids("x86_64"), ["any", "x86", "both"]);
+        assert_eq!(ids("riscv64"), ["any"]);
+        for bad in [r#","arch":"aarch64""#, r#","arch":[""]"#, r#","arch":[1]"#] {
+            let m = parse_manifest(&app_json(bad));
+            assert!(m.apps.is_empty() && m.errors[0].contains("arch"), "{bad}: {:?}", m.errors);
+        }
+        assert!(!running_arch().is_empty());
+    }
+
+    #[test]
+    fn category_notes_arch_and_pause_on_home_round_trip_through_receipts() {
+        let a = parse_manifest(&app_json(
+            r#","category":"Music","notes":"Sign in once.\nThen play.","arch":["aarch64"],"background":"keep-alive","pause_on_home":false"#,
+        ))
+        .apps
+        .remove(0);
+        assert_eq!((a.category.as_str(), a.notes.as_str()), ("Music", "Sign in once.\nThen play."));
+        assert_eq!(a.arch, ["aarch64"]);
+        assert!(!a.entry.pause_on_home);
+        assert_eq!(parse_app(a.to_value()).unwrap(), a);
+        let dir = std::env::temp_dir().join(format!("lumen-store-newkeys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        write_receipt(&dir, &a, "src").unwrap();
+        assert_eq!(read_receipt(&dir, "a").unwrap(), a);
+        // Absent keys stay absent in the serialised form (category is always written).
+        let plain = parse_manifest(&app_json("")).apps.remove(0).to_value();
+        assert!(plain.get("notes").is_none() && plain.get("arch").is_none());
+        assert_eq!(plain["category"], DEFAULT_CATEGORY);
     }
 
     #[test]
@@ -899,6 +1098,19 @@ mod tests {
         let base = std::env::temp_dir().join(format!("lumen-store-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         Dirs { registry: base.join("apps"), receipts: base.join("store") }
+    }
+
+    #[test]
+    fn section_layout_flags_each_section_start() {
+        let mk = |id: &str, cat: &str| {
+            let mut a = app(id, &[], &[]);
+            a.category = cat.to_string();
+            a
+        };
+        let apps = vec![mk("a", CATEGORIES[0]), mk("b", CATEGORIES[0]), mk("c", CATEGORIES[1])];
+        assert_eq!(section_layout(&apps), vec![(0, true), (0, false), (1, true)]);
+        assert_eq!(section_layout(&apps[..2]), vec![(0, true), (0, false)]);
+        assert!(section_layout(&[]).is_empty());
     }
 
     fn app(id: &str, install: &[&str], uninstall: &[&str]) -> StoreApp {
@@ -1356,7 +1568,7 @@ mod tests {
         let path = p.to_string_lossy().into_owned();
         assert_eq!(fetch(&path).unwrap(), MANIFEST);
         assert_eq!(fetch(&format!("file://{path}")).unwrap(), MANIFEST);
-        assert_eq!(load_manifest(&path).unwrap().apps.len(), 8);
+        assert_eq!(load_manifest(&path).unwrap().apps.len(), parse_manifest(MANIFEST).apps.len());
         assert!(fetch("/nonexistent/manifest.json").is_err());
         // A bare relative path (no scheme) is a local file too, not a curl URL.
         let rel = std::env::current_dir().unwrap().join("Cargo.toml");
@@ -1534,5 +1746,118 @@ mod tests {
         let mut set_ids: Vec<_> = al.keys().cloned().collect();
         set_ids.sort();
         assert_eq!(root_ids, set_ids);
+    }
+
+    #[test]
+    fn test_fixture_manifest_parses_and_holds_the_four_test_entries() {
+        let m = parse_manifest(include_str!("../store/fixtures/test-manifest.json"));
+        assert!(!m.fatal && m.errors.is_empty(), "{:?}", m.errors);
+        let ids: Vec<_> = m.apps.iter().map(|a| a.id()).collect();
+        assert_eq!(ids, ["kolourpaint", "store-test", "root-test", "notile-test"]);
+        let by = |id: &str| m.apps.iter().find(|a| a.id() == id).unwrap();
+        assert!(by("root-test").root && !by("kolourpaint").root && !by("store-test").root);
+        assert!(!by("notile-test").tile && by("kolourpaint").tile);
+    }
+
+    // ---- tile: false ----
+
+    fn notile(id: &str) -> StoreApp {
+        parse_app(json!({
+            "id": id, "name": id, "tile": false, "glyph": "SC", "colors": ["#112233", "#445566"], "order": 24,
+            "description": "d", "install": ["true"], "uninstall": ["true"],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn tile_false_parses_without_launch_and_tile_defaults_to_true() {
+        let a = notile("bg");
+        assert!(!a.tile && a.entry.launch.is_none() && a.entry.url.is_none());
+        assert!(app("x", &[], &[]).tile);
+        let err = parse_app(json!({"id": "a", "name": "a", "tile": "no", "install": [], "uninstall": []})).unwrap_err();
+        assert!(err.contains("tile"), "{err}");
+    }
+
+    #[test]
+    fn tile_false_rejects_every_tile_only_key_by_name() {
+        let samples = [
+            ("type", json!("command")),
+            ("launch", json!("x")),
+            ("url", json!("https://x")),
+            ("fallback_url", json!("https://x")),
+            ("app_id", json!("x")),
+            ("process", json!("x")),
+            ("background", json!("keep-alive")),
+            ("exclusive", json!(true)),
+            ("pause_on_home", json!(false)),
+            ("icon", json!("x")),
+            ("user_agent", json!("x")),
+            ("browser_args", json!(["--x"])),
+            ("keys", json!({"back": "KEY_ESC"})),
+        ];
+        assert_eq!(samples.len(), TILE_ONLY_KEYS.len());
+        for (k, v) in samples {
+            let mut o = json!({"id": "a", "name": "a", "tile": false, "install": [], "uninstall": []});
+            o[k] = v;
+            let err = parse_app(o).unwrap_err();
+            assert!(err.contains(&format!("\"{k}\"")), "{k}: {err}");
+        }
+    }
+
+    #[test]
+    fn tile_false_still_validates_id_name_glyph_and_colors() {
+        let bad = |k: &str, v: Value| {
+            let mut o = json!({"id": "a", "name": "a", "tile": false, "install": [], "uninstall": []});
+            o[k] = v;
+            parse_app(o).is_err()
+        };
+        assert!(bad("id", json!("bad id")));
+        assert!(bad("name", json!("  ")));
+        assert!(bad("glyph", json!("abc")));
+        assert!(bad("colors", json!(["#112233"])));
+        assert!(bad("colors", json!(["#112233", "red"])));
+    }
+
+    #[test]
+    fn tile_false_round_trips_through_to_value() {
+        let a = notile("bg");
+        let v = a.to_value();
+        assert_eq!(v["tile"], json!(false));
+        for k in TILE_ONLY_KEYS {
+            assert!(v.get(k).is_none(), "{k} leaked into {v}");
+        }
+        assert_eq!(parse_app(v).unwrap(), a);
+        assert!(app("x", &[], &[]).to_value().get("tile").is_none());
+    }
+
+    #[test]
+    fn tile_false_install_writes_only_the_receipt_and_uninstall_removes_it() {
+        let dirs = temp("notile");
+        let a = notile("bg");
+        let ids = HashSet::new();
+        assert!(!is_installed(&a, &ids, &dirs.receipts));
+        assert_eq!(run(&dirs, Action::Uninstall, &a).0.unwrap_err(), "not installed");
+        run(&dirs, Action::Install, &a).0.unwrap();
+        assert!(dirs.receipts.join("bg.json").exists());
+        assert!(!dirs.registry.join("bg.toml").exists());
+        assert!(!dirs.registry.exists() || std::fs::read_dir(&dirs.registry).unwrap().next().is_none());
+        assert!(is_installed(&a, &ids, &dirs.receipts));
+        assert_eq!(read_receipt(&dirs.receipts, "bg").unwrap(), a);
+        assert_eq!(run(&dirs, Action::Install, &a).0.unwrap_err(), "already installed");
+        run(&dirs, Action::Uninstall, &a).0.unwrap();
+        assert!(!dirs.receipts.join("bg.json").exists());
+        assert!(!is_installed(&a, &ids, &dirs.receipts));
+    }
+
+    #[test]
+    fn is_installed_follows_the_registry_for_tile_apps_and_the_receipt_otherwise() {
+        let dirs = temp("isinst");
+        let tiled = app("t", &[], &[]);
+        let ids: HashSet<String> = ["t".to_string()].into();
+        assert!(is_installed(&tiled, &ids, &dirs.receipts));
+        assert!(!is_installed(&tiled, &HashSet::new(), &dirs.receipts));
+        // a registry entry with the same id does not make a tile-less app installed
+        let bg = notile("t");
+        assert!(!is_installed(&bg, &ids, &dirs.receipts));
     }
 }

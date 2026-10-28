@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Lumen Spotify remote",
+  "version": "1.0",
+  "description": "Makes open.spotify.com usable with a TV remote's arrows: a visible focus ring, and text boxes kept out of arrow navigation.",
+  "content_scripts": [
+    {
+      "matches": ["https://open.spotify.com/*"],
+      "js": ["remote.js"],
+      "css": ["remote.css"],
+      "run_at": "document_start"
+    }
+  ]
+}

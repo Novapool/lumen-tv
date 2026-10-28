@@ -23,5 +23,12 @@
   </keyboard>
   <windowRules>
     <windowRule identifier="*" serverDecoration="no"/>
+    <!-- Flatpak game/media apps run under Xwayland (app_id = X11 WM_CLASS) and
+         do not start fullscreen themselves. Matching is case-insensitive globs.
+         ToggleFullscreen on map; do not also pass a fullscreen flag to these.
+         type="normal" keeps dialogs (VLC's first-run prompt) windowed. -->
+    <windowRule identifier="*moonlight*"><action name="ToggleFullscreen"/></windowRule>
+    <windowRule identifier="*chiaki*" type="normal"><action name="ToggleFullscreen"/></windowRule>
+    <windowRule identifier="vlc" type="normal"><action name="ToggleFullscreen"/></windowRule>
   </windowRules>
 </labwc_config>
